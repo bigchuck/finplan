@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# Environment
+.env
+
+# Data (your real data stays out)
+data/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
