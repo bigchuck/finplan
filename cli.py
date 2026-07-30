@@ -1,11 +1,4 @@
-"""Minimal CLI: run one scenario from an all_scenarios.json file.
-
-    python -m finplan.cli all_scenarios.json base
-    python -m finplan.cli all_scenarios.json           # lists scenario names
-
-Kept intentionally thin — reporting (forced-withdrawal report, etc.) grows
-here as later scenarios land.
-"""
+"""Minimal CLI: run one scenario from an all_scenarios.json file."""
 
 from __future__ import annotations
 
@@ -42,6 +35,10 @@ def main(argv=None) -> int:
         print(f"  {account:<{width}}  {engine.balance(account):>14,.2f}")
     print(f"  {'(whole-ledger sum)':<{width}}  "
           f"{sum(engine.balances().values()):>14,.2f}")
+
+    if sim.cash_manager is not None:
+        print()
+        print(sim.cash_manager.report())
     return 0
 
 

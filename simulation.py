@@ -56,10 +56,13 @@ def _months(start: date, n_years: int):
 
 class Simulation:
     def __init__(self, engine: Engine, objects: list[SimObject],
-                 start: date):
+                 start: date, cash_manager=None):
         self.engine = engine
         self.objects = objects
         self.start = start
+        # Reactive actor for the fund phase. None until Scenario 3 wires one;
+        # when absent, _fund is a no-op and the loop is unchanged.
+        self.cash_manager = cash_manager
 
     def run(self, n_years: int) -> Engine:
         for period in _months(self.start, n_years):
@@ -83,8 +86,12 @@ class Simulation:
             self.engine.post(txn)
 
     def _fund(self, period: Period) -> None:
-        # CashManager.cover_shortfall runs here after accrual. Scenario 3.
-        pass
+        # After accrual, so the manager sees the month's net cash before
+        # deciding whether to force a withdrawal. Sequential by design: it is
+        # ONE actor draining sources in waterfall order, each pull reading the
+        # balance the previous pull left — unlike the order-independent accrue.
+        if self.cash_manager is not None:
+            self.cash_manager.cover_shortfall(period, self.engine)
 
     def _assess(self, period: Period) -> None:
         # TaxEngine.settle runs here at year end. Tax milestone.

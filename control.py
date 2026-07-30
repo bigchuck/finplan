@@ -34,7 +34,11 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from .accounts import AssetAccount, LiabilityAccount
+from .accounts import (
+    AssetAccount, BrokerageAccount, LiabilityAccount, RothAccount,
+    TraditionalIRAAccount,
+)
+from .cashmanager import CashManager, Source
 from .engine import Engine
 from .generators import InterestPolicy, Stream
 from .primitives import Posting, Transaction, ZERO, money
@@ -47,6 +51,9 @@ OPENING = "Equity:Opening"
 _ACCOUNT_TYPES = {
     "asset": AssetAccount,
     "liability": LiabilityAccount,
+    "brokerage": BrokerageAccount,
+    "traditional_ira": TraditionalIRAAccount,
+    "roth": RothAccount,
 }
 
 # Keys consumed directly by the Stream constructor; anything else on a stream
@@ -73,11 +80,33 @@ def _build_stream(spec: dict) -> Stream:
     )
 
 
+def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
+    """Wire a CashManager from the 'cash_management' block, resolving each
+    waterfall source NAME to the actual account object (so the manager can
+    read basis / withholding and mutate basis on a sale).
+    """
+    waterfall = []
+    for rung in spec.get("waterfall", []):
+        name = rung["source"]
+        if name not in registry:
+            raise KeyError(f"waterfall source {name!r} is not a declared account")
+        waterfall.append(Source(account=registry[name],
+                                floor=money(rung.get("floor", 0))))
+    return CashManager(
+        cash_account=spec["account"],
+        floor=spec["floor"],
+        target=spec["target"],
+        waterfall=waterfall,
+        trigger=spec.get("trigger", "cash-floor"),
+    )
+
+
 def build(control: dict) -> tuple[Engine, Simulation, int]:
     """Build (engine, simulation, years) from a parsed control dict."""
     engine = Engine()
     objects: list[SimObject] = []
     opening_legs: list[Posting] = []
+    registry: dict = {}   # name -> account object, for the cash-manager wiring
 
     for spec in control.get("accounts", []):
         cls = _ACCOUNT_TYPES[spec["type"]]
@@ -85,6 +114,7 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
                  if k not in ("type", "name", "opening")}
         account = cls(name=spec["name"], attrs=attrs)
         objects.append(account)
+        registry[account.name] = account
 
         opening = money(spec.get("opening", 0))
         if opening != ZERO:
@@ -114,8 +144,13 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
             )
         )
 
+    cash_manager = None
+    if "cash_management" in control:
+        cash_manager = _build_cash_manager(control["cash_management"], registry)
+
     sim = Simulation(engine=engine, objects=objects,
-                     start=_parse_date(control["start"]))
+                     start=_parse_date(control["start"]),
+                     cash_manager=cash_manager)
     return engine, sim, int(control.get("years", 1))
 
 
