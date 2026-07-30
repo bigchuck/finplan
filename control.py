@@ -36,7 +36,7 @@ from datetime import date
 
 from .accounts import (
     AssetAccount, BrokerageAccount, LiabilityAccount, RothAccount,
-    TraditionalIRAAccount,
+    TraditionalIRAAccount, UNREALIZED,
 )
 from .cashmanager import CashManager, Source
 from .engine import Engine
@@ -105,7 +105,8 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
     """Build (engine, simulation, years) from a parsed control dict."""
     engine = Engine()
     objects: list[SimObject] = []
-    opening_legs: list[Posting] = []
+    opening_legs: list[Posting] = []       # asset legs (full market value)
+    gain_legs: list[Posting] = []          # embedded unrealized-gain legs
     registry: dict = {}   # name -> account object, for the cash-manager wiring
 
     for spec in control.get("accounts", []):
@@ -117,11 +118,28 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
         registry[account.name] = account
 
         opening = money(spec.get("opening", 0))
+
+        # A brokerage always carries an explicit basis so both the opening
+        # split and fund_from read the same value; default it to the full
+        # opening (a freshly bought lot with no embedded gain) when unset.
+        if isinstance(account, BrokerageAccount) and "basis" not in account.attrs:
+            account.attrs["basis"] = opening
+
         if opening != ZERO:
             opening_legs.append(
                 Posting(account.name, opening, owner=attrs.get("owner"),
                         meta={"kind": "opening"})
             )
+            # Embedded day-zero gain rides into Equity:UnrealizedGains so the
+            # invariant UnrealizedGains == -(mv - basis) holds from t0; only the
+            # basis portion lands against Equity:Opening (handled by the contra).
+            if isinstance(account, BrokerageAccount):
+                embedded = money(opening - money(account.attrs["basis"]))
+                if embedded != ZERO:
+                    gain_legs.append(
+                        Posting(UNREALIZED, -embedded, owner=attrs.get("owner"),
+                                meta={"kind": "opening"})
+                    )
 
         if isinstance(account, AssetAccount) and money(attrs.get("apr", 0)) != ZERO:
             objects.append(
@@ -131,16 +149,18 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
     for spec in control.get("streams", []):
         objects.append(_build_stream(spec))
 
-    # One balanced opening transaction: assets in, Equity:Opening as the
-    # contra so the day-zero snapshot itself sums to zero.
+    # One balanced opening transaction. Equity:Opening absorbs BASIS (the asset
+    # legs net of the embedded-gain legs); Equity:UnrealizedGains absorbs the
+    # embedded gain. The whole thing still sums to zero on day zero.
     if opening_legs:
-        contra = -sum((p.amount for p in opening_legs), ZERO)
-        opening_legs.append(Posting(OPENING, contra, meta={"kind": "opening"}))
+        legs = opening_legs + gain_legs
+        contra = -sum((p.amount for p in legs), ZERO)
+        legs.append(Posting(OPENING, contra, meta={"kind": "opening"}))
         engine.post(
             Transaction(
                 date=_parse_date(control["start"]),
                 description="Opening balances",
-                postings=opening_legs,
+                postings=legs,
             )
         )
 

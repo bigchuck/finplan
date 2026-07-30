@@ -43,6 +43,7 @@ from .simobject import SimObject
 
 ONE = money(1)
 RECOGNIZED = "Equity:Recognized"
+UNREALIZED = "Equity:UnrealizedGains"
 
 
 @dataclass
@@ -172,7 +173,36 @@ class BrokerageAccount(AssetAccount):
     on the GAIN SLICE only; basis is tracked (pooled average cost) and
     decremented proportionally so the gain fraction stays constant across
     sales. No withholding — cap-gains tax is handled later via estimates.
+
+    Market-value drift (apply_growth) raises ``mv`` monthly and leaves basis
+    put, so the taxable fraction ``(mv - basis)/mv`` ratchets UP over the
+    decades. Appreciation is UNREALIZED — it hits no Income gate — so its
+    balancing leg is the permanent ``Equity:UnrealizedGains`` bucket, which by
+    construction always equals ``-(mv - basis)``. A sale then UNWINDS the
+    realized slice out of that bucket (rather than minting a fresh contra):
+    the gain moves from unrealized -> realized (taxed), the bucket rises by the
+    slice, and the invariant survives the sale untouched.
     """
+
+    def apply_growth(self, period, engine: Engine) -> list[Transaction]:
+        mv = engine.balance(self.name)
+        growth = money(self.attrs.get("growth", 0))
+        g = money(mv * (growth / Decimal(12)))
+        if g == ZERO:
+            return []
+        owner = self.attrs.get("owner")
+        # Asset up, UnrealizedGains down: net worth rises, but NO income gate is
+        # touched (the gain is unrealized). basis is deliberately left alone.
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} appreciation @ {growth} annual",
+                postings=[
+                    Posting(self.name, g, owner=owner, meta={"kind": "growth"}),
+                    Posting(UNREALIZED, -g, owner=owner, meta={"kind": "growth"}),
+                ],
+            )
+        ]
 
     def fund_from(self, gross: Decimal, cash_account: str, period,
                   engine: Engine, meta: dict) -> Withdrawal:
@@ -200,19 +230,30 @@ class BrokerageAccount(AssetAccount):
         )
         txns = [transfer]
         if gain != ZERO:
+            # Unwind the realized slice from UnrealizedGains (not a fresh
+            # Recognized contra): the gain was already booked as unrealized, so
+            # realizing it is a transfer between equity buckets, net-worth
+            # neutral. This keeps UnrealizedGains == -(mv - basis) through sales.
             txns.append(_recognize("Income:CapGains:LT", gain, period, owner,
-                                   character="ltcg"))
+                                   character="ltcg", contra=UNREALIZED))
         return Withdrawal(txns=txns, gross=gross, net=gross, gain=gain,
                           character="ltcg", source=self.name)
 
 
 def _recognize(income_gate: str, amount: Decimal, period, owner,
-               character: str) -> Transaction:
-    """A recognition pair: credit an Income gate, debit Equity:Recognized.
+               character: str, contra: str = RECOGNIZED) -> Transaction:
+    """A recognition pair: credit an Income gate, debit an equity contra.
 
     Sums to zero on its own and is net-worth neutral (the Income gate would
-    otherwise push RetainedEarnings; the contra cancels it). It exists purely
-    to record taxable character at a gate the TaxEngine can read.
+    otherwise push RetainedEarnings; the contra cancels it). It exists to
+    record taxable character at a gate the TaxEngine can read.
+
+    ``contra`` selects which equity bucket absorbs the mirror:
+      Equity:Recognized       — for income with no prior booked gain (IRA
+                                principal becoming taxable on distribution).
+      Equity:UnrealizedGains  — for a brokerage sale, which merely REALIZES a
+                                gain already booked by apply_growth; the leg
+                                drains that bucket rather than minting new equity.
     """
     return Transaction(
         date=period.date,
@@ -220,7 +261,7 @@ def _recognize(income_gate: str, amount: Decimal, period, owner,
         postings=[
             Posting(income_gate, -amount, owner=owner,
                     meta={"kind": "recognition", "character": character}),
-            Posting(RECOGNIZED, amount, owner=owner,
+            Posting(contra, amount, owner=owner,
                     meta={"kind": "recognition", "character": character}),
         ],
         meta={"kind": "recognition"},
