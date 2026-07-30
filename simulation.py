@@ -3,7 +3,8 @@
 Monthly tick. Three phases per tick, in a fixed order to keep stock/flow
 ordering bugs from hiding:
 
-  accrue -> every SimObject.step() runs; transactions are posted
+  accrue -> every SimObject.step() runs against a tick-open SNAPSHOT of the
+            ledger; all emitted transactions are collected, THEN posted.
   fund   -> CashManager.cover_shortfall (runs AFTER accrual so it sees net
             cash). No-op until Scenario 3.
   assess -> year-end only: TaxEngine.settle reads the Income gates.
@@ -13,10 +14,14 @@ Separately, in December the *closing entries* sweep nominal accounts
 (Income:*, later Expense:*) to Equity:RetainedEarnings, resetting the gates
 for the next year. Assets/Liabilities/Equity ride across the boundary.
 
-Within accrue, objects are processed in list order and each transaction is
-posted as produced, so a later object reads balances reflecting earlier ones.
-For Scenario 1 the ordering is inert (one generator); it is documented here so
-the choice is explicit rather than accidental.
+SNAPSHOT (simultaneity) semantics within accrue: every object reads balances
+as of the start of the tick, because we collect all emissions before posting
+any of them. No object can see another object's same-tick output, so the
+result is independent of the order objects sit in the list. This is a
+deliberate choice over "post as produced": order-independence is a property
+we can trust over decades, and the cost — interest that ignores the current
+month's own inflows — is both defensible and negligible. Do NOT reintroduce
+posting inside the collection loop; that silently restores order dependence.
 """
 
 from __future__ import annotations
@@ -68,9 +73,14 @@ class Simulation:
     # --- phases -------------------------------------------------------------
 
     def _accrue(self, period: Period) -> None:
+        # Snapshot semantics: gather every object's emissions against the
+        # tick-open ledger FIRST, then post. Nothing is posted mid-gather, so
+        # each object sees the same starting balances regardless of list order.
+        pending: list[Transaction] = []
         for obj in self.objects:
-            for txn in obj.step(period, self.engine):
-                self.engine.post(txn)
+            pending.extend(obj.step(period, self.engine))
+        for txn in pending:
+            self.engine.post(txn)
 
     def _fund(self, period: Period) -> None:
         # CashManager.cover_shortfall runs here after accrual. Scenario 3.

@@ -9,7 +9,7 @@ from .primitives import Posting, Transaction, UnbalancedTransaction, money
 from .engine import Engine, LedgerLeak
 from .simobject import SimObject
 from .accounts import Account, AssetAccount, LiabilityAccount, IncomeAccount
-from .generators import Generator, InterestPolicy
+from .generators import Generator, InterestPolicy, Stream
 from .simulation import Simulation, Period
 from .scenarios import resolve, deep_merge, names, ScenarioError
 from .control import build, build_scenario, load
@@ -19,7 +19,7 @@ __all__ = [
     "Engine", "LedgerLeak",
     "SimObject",
     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
-    "Generator", "InterestPolicy",
+    "Generator", "InterestPolicy", "Stream",
     "Simulation", "Period",
     "resolve", "deep_merge", "names", "ScenarioError",
     "build", "build_scenario", "load",

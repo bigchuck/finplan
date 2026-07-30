@@ -7,7 +7,6 @@ postings every period they fire.
 Only the classes we actually implement live here. Per the design's aversion
 to NotImplementedError scaffolding, the other planned subtypes are NOT stubbed:
 
-  Stream    (scheduled external inflow: SS, pension, annuity)  -> Scenario 2
   Schedule  (forced/planned: RMD, Roth conversion, withdrawal) -> later
   Shock     (one-off unmodeled event)                          -> later
   OneOff    (degenerate Schedule, verbatim postings)           -> later
@@ -38,6 +37,66 @@ class Generator(SimObject):
         return self.emit(period, engine)
 
 
+class Stream(Generator):
+    """Scheduled EXTERNAL inflow: Social Security, pension, annuity.
+
+    The money originates outside your accounts, so this is the simple
+    single-pair shape — the Income gate legitimately IS the source leg:
+
+        Assets:<to>       += amount
+        Income:<gate>     -= amount
+
+    Contrast with a funding withdrawal (money already yours), which needs a
+    transfer pair PLUS a separate recognition pair. A Stream reads no ledger
+    state; it emits a fixed monthly amount, gated by a start (claiming) month
+    and an optional end month. Comparison is month-granular, consistent with
+    the sim's "date precision beyond month is not modeled" stance: the day of
+    ``start``/``end`` is ignored — only its (year, month) matters.
+
+    The distinctly-named income gate (Income:SS, Income:Pension, ...) is what
+    lets the future TaxEngine apply per-source rules (e.g. the ~85% SS
+    taxability cap) without Stream itself knowing anything about tax.
+    """
+
+    def __init__(self, name: str, to: str, income_account: str, amount,
+                 start=None, end=None, attrs=None):
+        super().__init__(name, attrs)
+        self.to = to
+        self.income_account = income_account
+        self.amount = money(amount)
+        self.start = start   # datetime.date or None
+        self.end = end       # datetime.date or None
+        # ``owner`` is cross-cutting metadata, not structural wiring, so it
+        # lives in attrs and is read at emit time — exactly as InterestPolicy
+        # reads it off its source account. Constructor fields are reserved for
+        # the wiring the Stream needs to function (to / income / amount / span).
+
+    def _active(self, period) -> bool:
+        pm = (period.year, period.month)
+        if self.start is not None and pm < (self.start.year, self.start.month):
+            return False
+        if self.end is not None and pm > (self.end.year, self.end.month):
+            return False
+        return True
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        if self.amount == ZERO or not self._active(period):
+            return []
+        owner = self.attrs.get("owner")
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} income",
+                postings=[
+                    Posting(self.to, self.amount, owner=owner,
+                            meta={"kind": "stream", "stream": self.name}),
+                    Posting(self.income_account, -self.amount, owner=owner,
+                            meta={"kind": "stream", "stream": self.name}),
+                ],
+            )
+        ]
+
+
 class InterestPolicy(Generator):
     """State-driven monthly interest on a cash asset account.
 
@@ -46,6 +105,10 @@ class InterestPolicy(Generator):
         Assets:<source>   += interest
         Income:<income>   -= interest
     The gate accrues all year and is swept to RetainedEarnings at close.
+
+    "Current" now means "as of tick open": the accrue phase collects every
+    object's emissions before posting any of them, so this reads a snapshot
+    that excludes same-tick inflows (e.g. this month's Stream deposit).
     """
 
     def __init__(self, name: str, source: AssetAccount,
