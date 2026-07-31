@@ -6,6 +6,7 @@ import argparse
 import json
 
 from .control import build_scenario
+from .generators import Schedule, schedule_report
 from .scenarios import names
 
 
@@ -42,6 +43,11 @@ def main(argv=None) -> int:
     if sim.tax_engine is not None:
         print()
         print(sim.tax_engine.report())
+
+    schedules = [o for o in sim.objects if isinstance(o, Schedule)]
+    if schedules:
+        print()
+        print(schedule_report(schedules))
     return 0
 
 

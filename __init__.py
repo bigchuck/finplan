@@ -1,9 +1,4 @@
-"""finplan — a forward-looking retirement financial projection engine.
-
-Not an accounting system: it simulates a forward plan. Double-entry is used
-as an invariant harness (every transaction sums to zero; the whole ledger
-sums to zero), not as bookkeeping ceremony.
-"""
+"""finplan — a forward-looking retirement financial projection engine."""
 
 from .primitives import Posting, Transaction, UnbalancedTransaction, money
 from .engine import Engine, LedgerLeak
@@ -12,7 +7,10 @@ from .accounts import (
     Account, AssetAccount, LiabilityAccount, IncomeAccount,
     BrokerageAccount, TraditionalIRAAccount, RothAccount, Withdrawal,
 )
-from .generators import Generator, InterestPolicy, Shock, Stream
+from .generators import (
+    Generator, InterestPolicy, Schedule, ScheduleEvent, schedule_report,
+    Shock, Stream,
+)
 from .cashmanager import CashManager, Source, FundingEvent
 from .taxengine import TaxEngine, TaxYearResult, SettlementEvent
 from .simulation import Simulation, Period
@@ -25,7 +23,8 @@ __all__ = [
     "SimObject",
     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
     "BrokerageAccount", "TraditionalIRAAccount", "RothAccount", "Withdrawal",
-    "Generator", "InterestPolicy", "Shock", "Stream",
+    "Generator", "InterestPolicy", "Schedule", "ScheduleEvent",
+    "schedule_report", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
     "TaxEngine", "TaxYearResult", "SettlementEvent",
     "Simulation", "Period",

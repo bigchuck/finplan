@@ -25,8 +25,11 @@ into the object graph. A flat resolved scenario looks like:
 
 An asset account with a non-zero "apr" automatically gets an InterestPolicy.
 A ``streams`` entry becomes a Stream generator (external inflow: SS, pension,
-annuity). Income gates (Income:Interest, Income:SS, ...) are not declared as
-accounts; they materialize in the ledger the moment income first posts.
+annuity). A ``schedules`` entry becomes a Schedule generator (forced/planned
+withdrawal: RMD or a fixed planned pull), resolving its ``source`` against
+the account registry so it reuses that account's own ``fund_from`` shape.
+Income gates (Income:Interest, Income:SS, ...) are not declared as accounts;
+they materialize in the ledger the moment income first posts.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from .accounts import (
 from .cashmanager import CashManager, Source
 from .taxengine import TaxEngine, DEFAULT_STD, DEFAULT_SS_INCLUSION
 from .engine import Engine
-from .generators import InterestPolicy, Shock, Stream
+from .generators import InterestPolicy, Schedule, Shock, Stream
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import resolve
 from .simobject import SimObject
@@ -63,6 +66,12 @@ _ACCOUNT_TYPES = {
 _STREAM_KEYS = ("name", "to", "income", "amount", "start", "end")
 # `from` is a Python keyword in the spec -> mapped to `frm` on the object.
 _SHOCK_KEYS = ("name", "from", "to", "amount", "when")
+# `source` is resolved through the registry (like a cash_management waterfall
+# rung), not passed as a string, so it is consumed here rather than falling
+# through to attrs.
+_SCHEDULE_KEYS = ("name", "source", "to", "mode", "amount", "month",
+                  "owner_birth_year", "rmd_start_age", "divisors",
+                  "start", "end")
 
 
 def _parse_date(s: str) -> date:
@@ -113,6 +122,30 @@ def _build_shock(spec: dict) -> Shock:
         to=spec["to"],
         amount=spec["amount"],
         when=_parse_date(spec["when"]),
+        attrs=attrs,
+    )
+
+
+def _build_schedule(spec: dict, registry: dict) -> Schedule:
+    """Turn one ``schedules`` entry into a Schedule generator, resolving
+    ``source`` to the actual account object (so fund_from/basis/withholding
+    are the live account state, same as the cash-management waterfall)."""
+    name = spec["source"]
+    if name not in registry:
+        raise KeyError(f"schedule source {name!r} is not a declared account")
+    attrs = {k: v for k, v in spec.items() if k not in _SCHEDULE_KEYS}
+    return Schedule(
+        name=spec["name"],
+        source=registry[name],
+        to=spec["to"],
+        mode=spec["mode"],
+        amount=spec.get("amount"),
+        month=spec.get("month", 1),
+        owner_birth_year=spec.get("owner_birth_year"),
+        rmd_start_age=spec.get("rmd_start_age", 73),
+        divisors=spec.get("divisors"),
+        start=_parse_date(spec["start"]) if spec.get("start") else None,
+        end=_parse_date(spec["end"]) if spec.get("end") else None,
         attrs=attrs,
     )
 
@@ -182,6 +215,12 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
     for spec in control.get("shocks", []):
         objects.append(_build_shock(spec))
+
+    # Schedules resolve `source` against the registry, so this must run after
+    # the accounts loop above has populated it (same ordering constraint as
+    # the cash-management waterfall, below).
+    for spec in control.get("schedules", []):
+        objects.append(_build_schedule(spec, registry))
 
     # One balanced opening transaction. Equity:Opening absorbs BASIS (the asset
     # legs net of the embedded-gain legs); Equity:UnrealizedGains absorbs the

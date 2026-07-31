@@ -167,6 +167,33 @@ class TraditionalIRAAccount(AssetAccount):
                           withheld=withheld, character="ordinary",
                           source=self.name)
 
+    def convert(self, gross: Decimal, destination: str, period,
+                engine: Engine, meta: dict) -> Withdrawal:
+        """Roth conversion: a DISTINCT shape from fund_from, not a withholding-
+        rate override of it. The full declared amount moves to ``destination``
+        — no PrepaidTax leg. Conversions are conventionally NOT withheld from
+        the converted amount itself (withholding the conversion just shrinks
+        the amount that actually gets Roth's tax-free treatment); the
+        resulting tax liability is assumed paid from outside funds — e.g. via
+        the existing estimated-tax / CashManager machinery already in place,
+        not modeled as a third leg here. Still fully ordinary income,
+        recognized exactly like a distribution (same TaxEngine gate).
+        """
+        owner = self.attrs.get("owner")
+        transfer = Transaction(
+            date=period.date,
+            description=f"Convert {self.name} -> {destination} (Roth conversion)",
+            postings=[
+                Posting(self.name, -gross, owner=owner, meta=dict(meta)),
+                Posting(destination, gross, owner=owner, meta=dict(meta)),
+            ],
+            meta=dict(meta),
+        )
+        recognition = _recognize("Income:Ordinary", gross, period, owner,
+                                 character="ordinary")
+        return Withdrawal(txns=[transfer, recognition], gross=gross, net=gross,
+                          character="ordinary", source=self.name)
+
 
 class BrokerageAccount(AssetAccount):
     """Taxable brokerage (Assets:Brokerage...). A sale realizes a capital gain
