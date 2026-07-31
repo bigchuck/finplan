@@ -39,6 +39,7 @@ from .accounts import (
     TraditionalIRAAccount, UNREALIZED,
 )
 from .cashmanager import CashManager, Source
+from .taxengine import TaxEngine, DEFAULT_STD, DEFAULT_SS_INCLUSION
 from .engine import Engine
 from .generators import InterestPolicy, Shock, Stream
 from .primitives import Posting, Transaction, ZERO, money
@@ -116,6 +117,21 @@ def _build_shock(spec: dict) -> Shock:
     )
 
 
+def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
+    """Wire a TaxEngine from the 'tax' block. Cash for settlement defaults to
+    the cash-management account, else Assets:Checking."""
+    cash = spec.get("cash_account") or control.get(
+        "cash_management", {}).get("account", "Assets:Checking")
+    return TaxEngine(
+        cash_account=cash,
+        brackets=spec.get("brackets"),
+        ltcg_brackets=spec.get("ltcg_brackets"),
+        std_deduction=spec.get("std_deduction", DEFAULT_STD),
+        ss_inclusion=spec.get("ss_inclusion", DEFAULT_SS_INCLUSION),
+        settle_month=spec.get("settle_month", 4),
+    )
+
+
 def build(control: dict) -> tuple[Engine, Simulation, int]:
     """Build (engine, simulation, years) from a parsed control dict."""
     engine = Engine()
@@ -186,9 +202,13 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
     if "cash_management" in control:
         cash_manager = _build_cash_manager(control["cash_management"], registry)
 
+    tax_engine = None
+    if "tax" in control:
+        tax_engine = _build_tax_engine(control["tax"], control)
+
     sim = Simulation(engine=engine, objects=objects,
                      start=_parse_date(control["start"]),
-                     cash_manager=cash_manager)
+                     cash_manager=cash_manager, tax_engine=tax_engine)
     return engine, sim, int(control.get("years", 1))
 
 

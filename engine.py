@@ -39,7 +39,9 @@ class Engine:
     # --- reads --------------------------------------------------------------
 
     def balance(self, account: str) -> Decimal:
-        return self._balances[account]
+        # .get, not [], so a mere read never materializes a zero account in the
+        # ledger (posting is the only thing that creates an account).
+        return self._balances.get(account, ZERO)
 
     def accounts(self, prefix: str = "") -> list[str]:
         """All account names, optionally filtered by prefix (e.g. 'Income:')."""

@@ -39,6 +39,9 @@ def main(argv=None) -> int:
     if sim.cash_manager is not None:
         print()
         print(sim.cash_manager.report())
+    if sim.tax_engine is not None:
+        print()
+        print(sim.tax_engine.report())
     return 0
 
 

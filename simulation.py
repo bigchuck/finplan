@@ -56,13 +56,16 @@ def _months(start: date, n_years: int):
 
 class Simulation:
     def __init__(self, engine: Engine, objects: list[SimObject],
-                 start: date, cash_manager=None):
+                 start: date, cash_manager=None, tax_engine=None):
         self.engine = engine
         self.objects = objects
         self.start = start
         # Reactive actor for the fund phase. None until Scenario 3 wires one;
         # when absent, _fund is a no-op and the loop is unchanged.
         self.cash_manager = cash_manager
+        # Reactive actor for the assess phase (year-end accrual + spring
+        # settlement). None until Scenario 6 wires one.
+        self.tax_engine = tax_engine
 
     def run(self, n_years: int) -> Engine:
         for period in _months(self.start, n_years):
@@ -94,8 +97,11 @@ class Simulation:
             self.cash_manager.cover_shortfall(period, self.engine)
 
     def _assess(self, period: Period) -> None:
-        # TaxEngine.settle runs here at year end. Tax milestone.
-        pass
+        # TaxEngine.settle runs BEFORE the year-end close, so December accrual
+        # can read the Income:* gates while they still hold the year's totals
+        # (the close then sweeps both the gates and the tax Expense it posts).
+        if self.tax_engine is not None:
+            self.tax_engine.settle(period, self.engine)
 
     # --- year-end closing entries ------------------------------------------
 
