@@ -40,7 +40,7 @@ from .accounts import (
 )
 from .cashmanager import CashManager, Source
 from .engine import Engine
-from .generators import InterestPolicy, Stream
+from .generators import InterestPolicy, Shock, Stream
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import resolve
 from .simobject import SimObject
@@ -60,6 +60,8 @@ _ACCOUNT_TYPES = {
 # spec (owner, and any future cross-cutting tags) falls through into its attrs
 # dict, keeping the schema open and matching how accounts carry owner.
 _STREAM_KEYS = ("name", "to", "income", "amount", "start", "end")
+# `from` is a Python keyword in the spec -> mapped to `frm` on the object.
+_SHOCK_KEYS = ("name", "from", "to", "amount", "when")
 
 
 def _parse_date(s: str) -> date:
@@ -98,6 +100,19 @@ def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
         target=spec["target"],
         waterfall=waterfall,
         trigger=spec.get("trigger", "cash-floor"),
+    )
+
+
+def _build_shock(spec: dict) -> Shock:
+    """Turn one ``shocks`` entry into a Shock generator (one-off event)."""
+    attrs = {k: v for k, v in spec.items() if k not in _SHOCK_KEYS}
+    return Shock(
+        name=spec["name"],
+        frm=spec["from"],
+        to=spec["to"],
+        amount=spec["amount"],
+        when=_parse_date(spec["when"]),
+        attrs=attrs,
     )
 
 
@@ -148,6 +163,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
     for spec in control.get("streams", []):
         objects.append(_build_stream(spec))
+
+    for spec in control.get("shocks", []):
+        objects.append(_build_shock(spec))
 
     # One balanced opening transaction. Equity:Opening absorbs BASIS (the asset
     # legs net of the embedded-gain legs); Equity:UnrealizedGains absorbs the

@@ -139,3 +139,51 @@ class InterestPolicy(Generator):
                 ],
             )
         ]
+
+
+class Shock(Generator):
+    """One-off unmodeled event: a single dated transaction that fires exactly
+    once, in a given (year, month). The escape hatch for things outside any
+    recurring rule — a new roof, a car, a medical bill, an inheritance.
+
+    Shape is one balanced pair, ``to`` up and ``from`` down:
+
+        <to>    += amount
+        <from>  -= amount
+
+    Semantics fall out of the accounts chosen, not from any flag:
+      spending : from=Assets:Checking, to=Expenses:Roof   (asset down, expense
+                 up -> swept to RetainedEarnings at close, net worth falls)
+      windfall : from=Income:Inheritance, to=Assets:Checking (income gate down,
+                 asset up -> net worth rises)
+
+    A cash-draining Shock is also what makes the CashManager fire mid-run: it
+    breaches the floor in one month instead of only at opening. Month-granular,
+    like Stream: only the (year, month) of ``when`` matters, never the day.
+    """
+
+    def __init__(self, name: str, frm: str, to: str, amount, when, attrs=None):
+        super().__init__(name, attrs)
+        self.frm = frm
+        self.to = to
+        self.amount = money(amount)
+        self.when = when   # datetime.date
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        if self.amount == ZERO:
+            return []
+        if (period.year, period.month) != (self.when.year, self.when.month):
+            return []
+        owner = self.attrs.get("owner")
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} (shock)",
+                postings=[
+                    Posting(self.to, self.amount, owner=owner,
+                            meta={"kind": "shock", "shock": self.name}),
+                    Posting(self.frm, -self.amount, owner=owner,
+                            meta={"kind": "shock", "shock": self.name}),
+                ],
+            )
+        ]

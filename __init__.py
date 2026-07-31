@@ -12,7 +12,7 @@ from .accounts import (
     Account, AssetAccount, LiabilityAccount, IncomeAccount,
     BrokerageAccount, TraditionalIRAAccount, RothAccount, Withdrawal,
 )
-from .generators import Generator, InterestPolicy, Stream
+from .generators import Generator, InterestPolicy, Shock, Stream
 from .cashmanager import CashManager, Source, FundingEvent
 from .simulation import Simulation, Period
 from .scenarios import resolve, deep_merge, names, ScenarioError
@@ -24,7 +24,7 @@ __all__ = [
     "SimObject",
     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
     "BrokerageAccount", "TraditionalIRAAccount", "RothAccount", "Withdrawal",
-    "Generator", "InterestPolicy", "Stream",
+    "Generator", "InterestPolicy", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
     "Simulation", "Period",
     "resolve", "deep_merge", "names", "ScenarioError",

@@ -11,7 +11,7 @@ ordering bugs from hiding:
             No-op until the tax milestone.
 
 Separately, in December the *closing entries* sweep nominal accounts
-(Income:*, later Expense:*) to Equity:RetainedEarnings, resetting the gates
+(Income:*, later Expenses:*) to Equity:RetainedEarnings, resetting the gates
 for the next year. Assets/Liabilities/Equity ride across the boundary.
 
 SNAPSHOT (simultaneity) semantics within accrue: every object reads balances
@@ -100,8 +100,8 @@ class Simulation:
     # --- year-end closing entries ------------------------------------------
 
     def _close(self, period: Period) -> None:
-        """Sweep every nominal (Income:*, Expense:*) balance to RetainedEarnings."""
-        for prefix in ("Income:", "Expense:"):
+        """Sweep every nominal (Income:*, Expenses:*) balance to RetainedEarnings."""
+        for prefix in ("Income:", "Expenses:"):
             for account in self.engine.accounts(prefix):
                 bal = self.engine.balance(account)
                 if bal == ZERO:
