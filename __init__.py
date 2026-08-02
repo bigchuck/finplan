@@ -6,13 +6,18 @@ from .simobject import SimObject
 from .accounts import (
     Account, AssetAccount, LiabilityAccount, IncomeAccount,
     BrokerageAccount, TraditionalIRAAccount, RothAccount, Withdrawal,
+    rate, check_unrealized, unrealized_gap, UnrealizedInvariantError,
 )
 from .generators import (
-    Generator, InterestPolicy, Schedule, ScheduleEvent, schedule_report,
-    Shock, Stream,
+    Generator, Policy, InterestPolicy, DividendPolicy, Schedule,
+    ScheduleEvent, schedule_report, Shock, Stream,
 )
 from .cashmanager import CashManager, Source, FundingEvent
-from .taxengine import TaxEngine, TaxYearResult, SettlementEvent
+from .taxengine import (
+    TaxEngine, TaxYearResult, SettlementEvent,
+    ORDINARY, PREFERENTIAL, SS, EXEMPT,
+    DEFAULT_GATE_CHARACTER, DEFAULT_GATE_PREFIXES,
+)
 from .simulation import Simulation, Period
 from .scenarios import resolve, deep_merge, names, ScenarioError
 from .control import build, build_scenario, load
@@ -23,10 +28,13 @@ __all__ = [
     "SimObject",
     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
     "BrokerageAccount", "TraditionalIRAAccount", "RothAccount", "Withdrawal",
-    "Generator", "InterestPolicy", "Schedule", "ScheduleEvent",
-    "schedule_report", "Shock", "Stream",
+    "rate", "check_unrealized", "unrealized_gap", "UnrealizedInvariantError",
+    "Generator", "Policy", "InterestPolicy", "DividendPolicy", "Schedule",
+    "ScheduleEvent", "schedule_report", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
     "TaxEngine", "TaxYearResult", "SettlementEvent",
+    "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
+    "DEFAULT_GATE_CHARACTER", "DEFAULT_GATE_PREFIXES",
     "Simulation", "Period",
     "resolve", "deep_merge", "names", "ScenarioError",
     "build", "build_scenario", "load",

@@ -5,13 +5,14 @@ directly — you declare generators, and the engine manufactures balanced
 postings every period they fire.
 
   Stream    (scheduled EXTERNAL inflow: SS, pension, annuity)   -- done
+  Policy    (state-driven recurring rate: interest, dividends)  -- this file
   Shock     (one-off unmodeled event)                           -- done
   Schedule  (forced/planned: RMD, withdrawal)                   -- this file
   OneOff    (degenerate Schedule, verbatim postings)            -> later
 
-The intermediate ``Policy`` grouping node (state-driven category) is likewise
-deferred until a second policy type (dividends) exists to justify the
-abstraction; for now InterestPolicy inherits Generator directly.
+The ``Policy`` grouping node was deferred until a second policy type existed
+to justify the abstraction; DividendPolicy is that second type, so it's
+introduced here and InterestPolicy is re-parented under it.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from .accounts import AssetAccount, TraditionalIRAAccount, Withdrawal
+from .accounts import AssetAccount, BrokerageAccount, TraditionalIRAAccount, Withdrawal, rate
 from .engine import Engine
 from .primitives import Posting, Transaction, ZERO, money
 from .simobject import SimObject
@@ -30,7 +31,6 @@ from .simobject import SimObject
 class Generator(SimObject):
     @abstractmethod
     def emit(self, period, engine: Engine) -> list[Transaction]:
-        """Return balanced transactions for this period (may be empty)."""
         raise NotImplementedError
 
     def step(self, period, engine: Engine) -> list[Transaction]:
@@ -38,12 +38,6 @@ class Generator(SimObject):
 
 
 class Stream(Generator):
-    """Scheduled EXTERNAL inflow: Social Security, pension, annuity.
-
-    The money originates outside your accounts, so this is the simple
-    single-pair shape — the Income gate legitimately IS the source leg.
-    """
-
     def __init__(self, name: str, to: str, income_account: str, amount,
                  start=None, end=None, attrs=None):
         super().__init__(name, attrs)
@@ -79,22 +73,38 @@ class Stream(Generator):
         ]
 
 
-class InterestPolicy(Generator):
-    """State-driven monthly interest on a cash asset account."""
+class Policy(Generator):
+    """State-driven recurring-rate generator: reads a source account's
+    balance and an annual rate attr (``rate_attr``), emits monthly. This is
+    the shared shape across any passive recurring cash flow driven by a
+    balance and a rate — interest and dividends today, and a real category
+    for things like bond coupons or rental yield later — even though what
+    each concrete Policy emits (which gate(s), one leg or several, whether a
+    reinvestment mutates basis) diverges completely below this point.
+    """
 
-    def __init__(self, name: str, source: AssetAccount,
-                 income_account: str = "Income:Interest", attrs=None):
+    def __init__(self, name: str, source: AssetAccount, rate_attr: str,
+                 attrs=None):
         super().__init__(name, attrs)
         self.source = source
-        self.income_account = income_account
+        self.rate_attr = rate_attr
 
     def _monthly_rate(self) -> Decimal:
-        apr = money(self.source.attrs.get("apr", 0))
-        return apr / Decimal(12)
+        return rate(self.source.attrs.get(self.rate_attr, 0)) / Decimal(12)
+
+    def monthly_amount(self, engine: Engine) -> Decimal:
+        balance = engine.balance(self.source.name)
+        return money(balance * self._monthly_rate())
+
+
+class InterestPolicy(Policy):
+    def __init__(self, name: str, source: AssetAccount,
+                 income_account: str = "Income:Interest", attrs=None):
+        super().__init__(name, source, rate_attr="apr", attrs=attrs)
+        self.income_account = income_account
 
     def emit(self, period, engine: Engine) -> list[Transaction]:
-        balance = engine.balance(self.source.name)
-        interest = money(balance * self._monthly_rate())
+        interest = self.monthly_amount(engine)
         if interest == ZERO:
             return []
         owner = self.source.attrs.get("owner")
@@ -112,9 +122,105 @@ class InterestPolicy(Generator):
         ]
 
 
-class Shock(Generator):
-    """One-off unmodeled event: fires exactly once, in a given (year, month)."""
+class DividendPolicy(Policy):
+    """State-driven monthly dividend on a brokerage account.
 
+    ``growth`` on BrokerageAccount.apply_growth is PRICE RETURN;
+    ``dividend_yield`` here is ADDITIVE on top — total return =
+    growth + dividend_yield. This keeps mv appreciation (unrealized, no
+    gate) and dividend cash flow (realized income, a gate) as two
+    independent, separately-attributable levers, matching how return
+    assumptions are conventionally quoted ("7% growth, 2% yield") and
+    avoiding the footgun of a total-return number silently double-counting
+    against a separately-set growth rate.
+
+    Split into qualified / ordinary by ``qualified_fraction`` (default 1.0
+    — fully qualified, the common case for a diversified equity fund).
+    Qualified dividends post to Income:Dividends:Qualified (PREFERENTIAL
+    character in the TaxEngine's gate table, taxed on the LTCG schedule);
+    the ordinary slice posts to Income:Dividends:Ordinary.
+
+    reinvest=True (default): destination IS the source account itself (cash
+    lands back in the brokerage, raising mv). Because that money was already
+    taxed as income this same tick, basis must rise by the same amount —
+    omitting this would double-tax it as embedded gain on a later sale. But
+    the mv leg below is only a pending transaction at emit() time (accrue
+    collects before posting), so mutating basis here would read/write ahead
+    of the engine. The credit is deferred to settle_effects, which runs
+    after this tick's transactions are actually posted — see
+    SimObject.settle_effects and BrokerageAccount.credit_basis.
+
+    reinvest=False: destination is ``to`` (a cash account); no basis credit,
+    since the money leaves the brokerage account entirely.
+    """
+
+    def __init__(self, name: str, source: BrokerageAccount,
+                 qualified_fraction=1, reinvest: bool = True,
+                 to: str | None = None, attrs=None):
+        super().__init__(name, source, rate_attr="dividend_yield", attrs=attrs)
+        self.qualified_fraction = rate(qualified_fraction)
+        self.reinvest = bool(reinvest)
+        self.to = to
+        # Basis delta held back out of the collection loop; see settle_effects.
+        self._pending_basis = ZERO
+
+        if not isinstance(source, BrokerageAccount):
+            raise ValueError(
+                f"DividendPolicy {name!r}: source must be a BrokerageAccount "
+                f"(basis tracking and taxability are brokerage-specific), "
+                f"got {type(source).__name__}")
+        if not (ZERO <= self.qualified_fraction <= 1):
+            raise ValueError(
+                f"DividendPolicy {name!r}: qualified_fraction must be in "
+                f"[0, 1], got {self.qualified_fraction}")
+        if not self.reinvest and not self.to:
+            raise ValueError(
+                f"DividendPolicy {name!r}: reinvest=false requires a "
+                f"'dividend_to' cash destination")
+
+    @property
+    def destination(self) -> str:
+        return self.source.name if self.reinvest else self.to
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        self._pending_basis = ZERO   # never leave a stale delta from a prior tick
+        div = self.monthly_amount(engine)
+        if div == ZERO:
+            return []
+
+        owner = self.source.attrs.get("owner")
+        qualified = money(div * self.qualified_fraction)
+        # Subtract rather than multiply by (1 - fraction): the two gates then
+        # sum to div EXACTLY, immune to the rounding a second multiply invites.
+        ordinary = money(div - qualified)
+        meta = {"kind": "dividend", "policy": self.name}
+
+        postings = [Posting(self.destination, div, owner=owner, meta=dict(meta))]
+        if qualified != ZERO:
+            postings.append(Posting("Income:Dividends:Qualified", -qualified,
+                                    owner=owner, meta=dict(meta)))
+        if ordinary != ZERO:
+            postings.append(Posting("Income:Dividends:Ordinary", -ordinary,
+                                    owner=owner, meta=dict(meta)))
+
+        if self.reinvest:
+            self._pending_basis = div
+
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} dividend",
+                postings=postings,
+            )
+        ]
+
+    def settle_effects(self, period, engine: Engine) -> None:
+        if self._pending_basis != ZERO:
+            self.source.credit_basis(self._pending_basis)
+            self._pending_basis = ZERO
+
+
+class Shock(Generator):
     def __init__(self, name: str, frm: str, to: str, amount, when, attrs=None):
         super().__init__(name, attrs)
         self.frm = frm
@@ -142,13 +248,6 @@ class Shock(Generator):
         ]
 
 
-# --- Schedule: forced/planned withdrawals (RMD, fixed) ---------------------
-
-# 2022 IRS Uniform Lifetime Table (age -> distribution period). This is a
-# swappable ASSUMPTION, not a structural constant: a control-file "divisors"
-# map overrides/extends it per scenario, the same way tax brackets are
-# overridable rather than hardcoded truth. Ages beyond the table use the last
-# entry (the table effectively flatlines at the oldest ages in practice).
 DEFAULT_RMD_DIVISORS: dict[int, Decimal] = {
     72: Decimal("27.4"), 73: Decimal("26.5"), 74: Decimal("25.5"),
     75: Decimal("24.6"), 76: Decimal("23.7"), 77: Decimal("22.9"),
@@ -165,11 +264,6 @@ DEFAULT_RMD_DIVISORS: dict[int, Decimal] = {
 
 @dataclass
 class ScheduleEvent:
-    """One firing of a Schedule — the planned-withdrawal analog of
-    CashManager's FundingEvent. ``requested`` vs ``gross`` mirrors
-    CashManager's need_net vs delivered: they differ only when the source's
-    own capacity capped the pull short of what the plan called for.
-    """
     date: date
     mode: str
     requested: Decimal
@@ -183,56 +277,6 @@ class ScheduleEvent:
 
 
 class Schedule(Generator):
-    """A forced/planned withdrawal from a source account, on a fixed monthly
-    trigger — the generator-side counterpart to CashManager's REACTIVE pulls.
-
-    Three modes, chosen by ``mode``:
-
-      "fixed"          — a declared GROSS amount, fired every ``month`` of
-                         every active year. ``amount`` is required.
-
-      "rmd"            — gross = balance(tick-open) / divisor(age), fired
-                         once a year in ``month`` (default January), active
-                         once ``owner_birth_year`` puts the owner at or past
-                         ``rmd_start_age`` (default 73). ``owner_birth_year``
-                         is required; ``divisors`` optionally overrides/
-                         extends DEFAULT_RMD_DIVISORS by age.
-
-      "roth_conversion" — a declared GROSS amount, fired every ``month`` of
-                         every active year, like "fixed" — but dispatches to
-                         the source's ``convert()`` rather than ``fund_from()``:
-                         the FULL amount lands in ``to`` with NO withholding
-                         leg (conventional for a conversion — the tax is
-                         assumed paid from outside funds). ``source`` MUST be
-                         a TraditionalIRAAccount (that's the only account type
-                         a "conversion" is a coherent operation on); ``amount``
-                         is required.
-
-    ``start``/``end`` optionally bound ALL modes to a window of active years
-    (month-granular, same semantics as Stream) — e.g. a conversion campaign
-    run only for a handful of years before RMDs or SS begin. Unset means
-    always active, exactly like Stream's default.
-
-    Firing RMD in JANUARY (not December) is deliberate: under snapshot
-    semantics the Jan-1 tick-open balance IS the prior Dec-31 balance — the
-    exact numerator the IRS RMD formula wants. Firing in December would read
-    the CURRENT year's still-growing balance, a year too early.
-
-    Whatever the source account's own fund_from/convert shape is (IRA 3-leg +
-    Income:Ordinary recognition, brokerage transfer + gain-slice recognition,
-    Roth pure transfer, IRA conversion transfer + full recognition, no
-    withholding leg) is exactly what a Schedule reuses — it never reimplements
-    gross-up, withholding, or recognition; it only decides HOW MUCH and WHEN,
-    then delegates. This keeps the tax-character logic in exactly one place.
-
-    Money moves source -> ``to``, tagged with ``{"scheduled": True,
-    "trigger": self.name}`` (the planned-withdrawal analog of CashManager's
-    ``{"forced": True, ...}`` tag) so the journal or a report can distinguish
-    scheduled distributions from CashManager's reactive ones. Every firing is
-    also recorded in ``self.events`` for the forced-withdrawal-style
-    ``report()`` below.
-    """
-
     _MODES = ("fixed", "rmd", "roth_conversion")
 
     def __init__(self, name: str, source: AssetAccount, to: str, mode: str,
@@ -247,10 +291,9 @@ class Schedule(Generator):
         self.month = int(month)
         self.owner_birth_year = owner_birth_year
         self.rmd_start_age = int(rmd_start_age)
-        self.start = start   # datetime.date or None
-        self.end = end       # datetime.date or None
+        self.start = start
+        self.end = end
         self.events: list[ScheduleEvent] = []
-        # Per-schedule override/extension of the default table, keyed by age.
         merged = dict(DEFAULT_RMD_DIVISORS)
         if divisors:
             merged.update({int(k): Decimal(str(v)) for k, v in divisors.items()})
@@ -270,8 +313,6 @@ class Schedule(Generator):
                 f"Schedule {name!r}: mode 'roth_conversion' requires source "
                 f"to be a TraditionalIRAAccount, got {type(source).__name__}")
 
-    # --- active-window gating (mirrors Stream._active) ----------------------
-
     def _active(self, period) -> bool:
         pm = (period.year, period.month)
         if self.start is not None and pm < (self.start.year, self.start.month):
@@ -280,16 +321,12 @@ class Schedule(Generator):
             return False
         return True
 
-    # --- gross-amount decision, split by mode -------------------------------
-
     def _age_in(self, year: int) -> int:
         return year - self.owner_birth_year
 
     def _divisor(self, age: int) -> Decimal:
         if age in self.divisors:
             return self.divisors[age]
-        # Beyond the table's top age: hold at the last known divisor rather
-        # than raise, so a multi-decade sim doesn't die at age 101.
         table_top = max(self.divisors)
         return self.divisors[table_top] if age > table_top else self.divisors[
             min(a for a in self.divisors if a >= age)
@@ -299,13 +336,12 @@ class Schedule(Generator):
         if self.mode in ("fixed", "roth_conversion"):
             return self.amount if period.month == self.month else ZERO
 
-        # mode == "rmd"
         if period.month != self.month:
             return ZERO
         age = self._age_in(period.year)
         if age < self.rmd_start_age:
             return ZERO
-        balance = engine.balance(self.source.name)   # tick-open snapshot
+        balance = engine.balance(self.source.name)
         if balance <= ZERO:
             return ZERO
         divisor = self._divisor(age)
@@ -321,7 +357,7 @@ class Schedule(Generator):
         if requested <= ZERO:
             return []
 
-        capacity = self.source.capacity(ZERO, engine)   # don't go negative
+        capacity = self.source.capacity(ZERO, engine)
         gross = capacity if capacity < requested else requested
         if gross <= ZERO:
             return []
@@ -339,13 +375,7 @@ class Schedule(Generator):
         ))
         return wd.txns
 
-    # --- reporting -----------------------------------------------------------
-
     def report(self) -> str:
-        """The forced-withdrawal-style report for THIS schedule. Empty-events
-        case still names the schedule so an aggregate report can say plainly
-        that a declared schedule never actually fired (e.g. owner never
-        reached rmd_start_age within the simulated horizon)."""
         if not self.events:
             return f"  {self.name} ({self.mode}): never fired."
         lines = [f"  {self.name} ({self.mode}) — {len(self.events)} distribution(s):"]
@@ -364,12 +394,6 @@ class Schedule(Generator):
 
 
 def schedule_report(schedules: list[Schedule]) -> str:
-    """Aggregate report across every declared Schedule (there is no single
-    ScheduleManager instance the way there's one CashManager — each JSON
-    ``schedules`` entry is its own Schedule object — so this is a module-level
-    helper the CLI/report layer calls over sim.objects, the same way it reads
-    sim.cash_manager.report() and sim.tax_engine.report()).
-    """
     if not schedules:
         return "No schedules declared."
     lines = ["Scheduled-withdrawal report:"]

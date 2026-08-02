@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP
 
 from .engine import Engine
 from .primitives import Decimal, Posting, Transaction, ZERO, money
@@ -45,27 +46,33 @@ ONE = money(1)
 RECOGNIZED = "Equity:Recognized"
 UNREALIZED = "Equity:UnrealizedGains"
 
+# Rates and fractions (apr, growth, dividend_yield, qualified_fraction) are
+# NEVER balances — cent-quantizing a rate like 0.0175 with `money()` silently
+# corrupts it. `rate()` keeps six decimal places instead, plenty for a rate
+# expressed to basis points, while still normalizing str/int/Decimal input.
+RATE_PRECISION = Decimal("0.000001")
+
+
+def rate(value) -> Decimal:
+    """Coerce to a Decimal at rate precision (6 dp) — for rates/fractions,
+    never for money. See RATE_PRECISION."""
+    return Decimal(str(value)).quantize(RATE_PRECISION, rounding=ROUND_HALF_UP)
+
 
 @dataclass
 class Withdrawal:
-    """Result of one ``fund_from`` call: the transactions plus the numbers the
-    CashManager needs (to subtract NET from the shortfall) and the report wants.
-    """
     txns: list[Transaction]
     gross: Decimal
-    net: Decimal                 # cash actually delivered to the cash account
-    withheld: Decimal = ZERO     # tax withheld to PrepaidTax (IRA only)
-    gain: Decimal = ZERO         # taxable gain recognized (brokerage only)
-    character: str | None = None  # 'ltcg' | 'ordinary' | None (tax-free)
+    net: Decimal
+    withheld: Decimal = ZERO
+    gain: Decimal = ZERO
+    character: str | None = None
     source: str = ""
 
 
 class Account(SimObject):
-    """A stock. Holds a balance in the ledger and must define apply_growth()."""
-
     @abstractmethod
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
-        """Emit transactions for this account's own market-value appreciation."""
         raise NotImplementedError
 
     def step(self, period, engine: Engine) -> list[Transaction]:
@@ -73,36 +80,19 @@ class Account(SimObject):
 
 
 class AssetAccount(Account):
-    """Permanent asset (Assets:*). Rides across year boundaries.
-
-    Also the base *fundable source*: its default ``fund_from`` is the simplest
-    shape — a pure transfer pair, no tax recognition, no withholding. Plain
-    cash/savings (and Roth, below) use exactly this.
-    """
-
-    # --- growth -------------------------------------------------------------
-
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
-        # Cash/checking: no unrealized appreciation. Interest is income, emitted
-        # by an InterestPolicy against an Income gate — not modeled here.
-        # Brokerage market-value drift (which feeds basis) lands in Brokerage.
         return []
-
-    # --- funding source interface ------------------------------------------
 
     @property
     def withholding_rate(self) -> Decimal:
-        """Fraction withheld to PrepaidTax on a pull. Zero unless overridden."""
         return money(self.attrs.get("withholding", 0))
 
     def capacity(self, source_floor, engine: Engine) -> Decimal:
-        """GROSS amount pullable without breaching this source's own floor."""
         avail = money(engine.balance(self.name) - money(source_floor))
         return avail if avail > ZERO else ZERO
 
     def fund_from(self, gross: Decimal, cash_account: str, period,
                   engine: Engine, meta: dict) -> Withdrawal:
-        """Default shape: pure transfer, money already yours, no tax event."""
         leg = dict(meta)
         transfer = Transaction(
             date=period.date,
@@ -120,19 +110,10 @@ class AssetAccount(Account):
 
 
 class RothAccount(AssetAccount):
-    """Roth (Assets:Roth...). Qualified distributions are tax-free, so the
-    shape is exactly the base pure transfer — no recognition, no withholding.
-    Named as its own type so the waterfall/report/tax layers can see that a
-    pull came from tax-free money (and so 'break-glass last' reads clearly in
-    the JSON waterfall). Behaviourally identical to the base transfer.
-    """
+    pass
 
 
 class TraditionalIRAAccount(AssetAccount):
-    """Pre-tax IRA (Assets:IRA...). A distribution is fully ordinary income and
-    withholds a fraction (~20%) to PrepaidTax:TYn on the way out.
-    """
-
     @property
     def withholding_rate(self) -> Decimal:
         return money(self.attrs.get("withholding", "0.20"))
@@ -141,13 +122,10 @@ class TraditionalIRAAccount(AssetAccount):
                   engine: Engine, meta: dict) -> Withdrawal:
         w = self.withholding_rate
         withheld = money(gross * w)
-        net = money(gross - withheld)          # what actually reaches cash
+        net = money(gross - withheld)
         owner = self.attrs.get("owner")
         prepaid = f"Assets:PrepaidTax:TY{period.year}"
 
-        # 3-leg transfer: all assets, sums to zero, net-worth neutral. The
-        # withheld portion becomes a prepaid-tax asset, not an expense (the
-        # expense is booked later when the TaxEngine settles the liability).
         transfer = Transaction(
             date=period.date,
             description=f"Fund {cash_account} from {self.name} (IRA distribution)",
@@ -159,8 +137,6 @@ class TraditionalIRAAccount(AssetAccount):
             ],
             meta=dict(meta),
         )
-        # Recognition: the FULL pull is ordinary income. Contra to Equity:
-        # Recognized cancels the phantom net-worth bump.
         recognition = _recognize("Income:Ordinary", gross, period, owner,
                                  character="ordinary")
         return Withdrawal(txns=[transfer, recognition], gross=gross, net=net,
@@ -169,16 +145,6 @@ class TraditionalIRAAccount(AssetAccount):
 
     def convert(self, gross: Decimal, destination: str, period,
                 engine: Engine, meta: dict) -> Withdrawal:
-        """Roth conversion: a DISTINCT shape from fund_from, not a withholding-
-        rate override of it. The full declared amount moves to ``destination``
-        — no PrepaidTax leg. Conversions are conventionally NOT withheld from
-        the converted amount itself (withholding the conversion just shrinks
-        the amount that actually gets Roth's tax-free treatment); the
-        resulting tax liability is assumed paid from outside funds — e.g. via
-        the existing estimated-tax / CashManager machinery already in place,
-        not modeled as a third leg here. Still fully ordinary income,
-        recognized exactly like a distribution (same TaxEngine gate).
-        """
         owner = self.attrs.get("owner")
         transfer = Transaction(
             date=period.date,
@@ -196,30 +162,13 @@ class TraditionalIRAAccount(AssetAccount):
 
 
 class BrokerageAccount(AssetAccount):
-    """Taxable brokerage (Assets:Brokerage...). A sale realizes a capital gain
-    on the GAIN SLICE only; basis is tracked (pooled average cost) and
-    decremented proportionally so the gain fraction stays constant across
-    sales. No withholding — cap-gains tax is handled later via estimates.
-
-    Market-value drift (apply_growth) raises ``mv`` monthly and leaves basis
-    put, so the taxable fraction ``(mv - basis)/mv`` ratchets UP over the
-    decades. Appreciation is UNREALIZED — it hits no Income gate — so its
-    balancing leg is the permanent ``Equity:UnrealizedGains`` bucket, which by
-    construction always equals ``-(mv - basis)``. A sale then UNWINDS the
-    realized slice out of that bucket (rather than minting a fresh contra):
-    the gain moves from unrealized -> realized (taxed), the bucket rises by the
-    slice, and the invariant survives the sale untouched.
-    """
-
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         mv = engine.balance(self.name)
-        growth = money(self.attrs.get("growth", 0))
+        growth = rate(self.attrs.get("growth", 0))
         g = money(mv * (growth / Decimal(12)))
         if g == ZERO:
             return []
         owner = self.attrs.get("owner")
-        # Asset up, UnrealizedGains down: net worth rises, but NO income gate is
-        # touched (the gain is unrealized). basis is deliberately left alone.
         return [
             Transaction(
                 date=period.date,
@@ -241,8 +190,6 @@ class BrokerageAccount(AssetAccount):
             gain = money(gross * (mv - basis) / mv)
         else:
             gain = ZERO
-        # basis returned by this sale = gross - gain (keeps gain+basis == gross
-        # exactly, immune to rounding); basis drifts down proportionally.
         basis_sold = money(gross - gain)
         self.attrs["basis"] = money(basis - basis_sold)
 
@@ -257,31 +204,25 @@ class BrokerageAccount(AssetAccount):
         )
         txns = [transfer]
         if gain != ZERO:
-            # Unwind the realized slice from UnrealizedGains (not a fresh
-            # Recognized contra): the gain was already booked as unrealized, so
-            # realizing it is a transfer between equity buckets, net-worth
-            # neutral. This keeps UnrealizedGains == -(mv - basis) through sales.
             txns.append(_recognize("Income:CapGains:LT", gain, period, owner,
                                    character="ltcg", contra=UNREALIZED))
         return Withdrawal(txns=txns, gross=gross, net=gross, gain=gain,
                           character="ltcg", source=self.name)
 
+    def credit_basis(self, amount: Decimal) -> None:
+        """Increase basis by ``amount`` — for already-taxed money (a
+        reinvested dividend) landing back in this account. This does NOT
+        touch the ledger; the mv leg is posted separately by whatever
+        transaction delivered the cash. Omitting this call after such a
+        transaction causes double-taxation: the reinvested amount would
+        still count as embedded gain on a later sale, even though it was
+        already taxed as income when it arrived.
+        """
+        self.attrs["basis"] = money(money(self.attrs.get("basis", 0)) + amount)
+
 
 def _recognize(income_gate: str, amount: Decimal, period, owner,
                character: str, contra: str = RECOGNIZED) -> Transaction:
-    """A recognition pair: credit an Income gate, debit an equity contra.
-
-    Sums to zero on its own and is net-worth neutral (the Income gate would
-    otherwise push RetainedEarnings; the contra cancels it). It exists to
-    record taxable character at a gate the TaxEngine can read.
-
-    ``contra`` selects which equity bucket absorbs the mirror:
-      Equity:Recognized       — for income with no prior booked gain (IRA
-                                principal becoming taxable on distribution).
-      Equity:UnrealizedGains  — for a brokerage sale, which merely REALIZES a
-                                gain already booked by apply_growth; the leg
-                                drains that bucket rather than minting new equity.
-    """
     return Transaction(
         date=period.date,
         description=f"Recognize {amount} to {income_gate}",
@@ -296,20 +237,40 @@ def _recognize(income_gate: str, amount: Decimal, period, owner,
 
 
 class LiabilityAccount(Account):
-    """Permanent liability (Liabilities:*)."""
-
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         return []
 
 
 class IncomeAccount(Account):
-    """A nominal income gate (Income:*).
-
-    Not a wallet — a labeled gate on your own financial wall that accumulates
-    tax-character information across the year and is swept to zero each
-    December by the closing entries. It holds a balance (credit-normal, so a
-    negative number as income accrues) but appreciates nothing of its own.
-    """
-
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         return []
+
+
+class UnrealizedInvariantError(AssertionError):
+    """Raised when Equity:UnrealizedGains drifts from -(mv - basis) summed
+    across every brokerage account. A drift means a bug crept into growth,
+    a sale, or a dividend reinvestment — this is the check-at-the-boundary
+    catch, the brokerage analog of Engine's whole-ledger zero-sum assertion.
+    """
+
+
+def unrealized_gap(engine: Engine, brokerages: list["BrokerageAccount"]) -> Decimal:
+    """Return Equity:UnrealizedGains minus the expected -(mv - basis) total
+    across ``brokerages``. Zero means the invariant holds."""
+    expected = ZERO
+    for acct in brokerages:
+        mv = engine.balance(acct.name)
+        basis = money(acct.attrs.get("basis", 0))
+        expected = money(expected - (mv - basis))
+    actual = engine.balance(UNREALIZED)
+    return money(actual - expected)
+
+
+def check_unrealized(engine: Engine, brokerages: list["BrokerageAccount"]) -> None:
+    """Assert the invariant holds; raise UnrealizedInvariantError if not."""
+    gap = unrealized_gap(engine, brokerages)
+    if gap != ZERO:
+        raise UnrealizedInvariantError(
+            f"Equity:UnrealizedGains drifted by {gap}: expected "
+            f"-(mv - basis) summed across {[a.name for a in brokerages]}"
+        )

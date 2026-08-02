@@ -1,36 +1,4 @@
-"""Declarative control file -> object graph.
-
-You declare accounts and generators; the loader wires them up, seeds opening
-balances against the frozen Equity:Opening snapshot, and hands back a ready
-Simulation. History is never backfilled — opening balances are the only
-day-zero postings.
-
-The file (all_scenarios.json) holds many named scenarios under "scenarios",
-with `extends` inheritance resolved by the scenarios module. `build_scenario`
-resolves a named scenario to one flat dict, then `build` turns that flat dict
-into the object graph. A flat resolved scenario looks like:
-
-    {
-      "start": "2026-01-01",
-      "years": 1,
-      "accounts": [
-        {"type": "asset", "name": "Assets:Checking", "owner": "chuck",
-         "opening": "100000.00", "apr": "0.03"}
-      ],
-      "streams": [
-        {"name": "SS", "to": "Assets:Checking", "income": "Income:SS",
-         "amount": "3000.00", "start": "2026-01-01", "owner": "chuck"}
-      ]
-    }
-
-An asset account with a non-zero "apr" automatically gets an InterestPolicy.
-A ``streams`` entry becomes a Stream generator (external inflow: SS, pension,
-annuity). A ``schedules`` entry becomes a Schedule generator (forced/planned
-withdrawal: RMD or a fixed planned pull), resolving its ``source`` against
-the account registry so it reuses that account's own ``fund_from`` shape.
-Income gates (Income:Interest, Income:SS, ...) are not declared as accounts;
-they materialize in the ledger the moment income first posts.
-"""
+"""Declarative control file -> object graph."""
 
 from __future__ import annotations
 
@@ -44,7 +12,7 @@ from .accounts import (
 from .cashmanager import CashManager, Source
 from .taxengine import TaxEngine, DEFAULT_STD, DEFAULT_SS_INCLUSION
 from .engine import Engine
-from .generators import InterestPolicy, Schedule, Shock, Stream
+from .generators import DividendPolicy, InterestPolicy, Schedule, Shock, Stream
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import resolve
 from .simobject import SimObject
@@ -60,15 +28,8 @@ _ACCOUNT_TYPES = {
     "roth": RothAccount,
 }
 
-# Keys consumed directly by the Stream constructor; anything else on a stream
-# spec (owner, and any future cross-cutting tags) falls through into its attrs
-# dict, keeping the schema open and matching how accounts carry owner.
 _STREAM_KEYS = ("name", "to", "income", "amount", "start", "end")
-# `from` is a Python keyword in the spec -> mapped to `frm` on the object.
 _SHOCK_KEYS = ("name", "from", "to", "amount", "when")
-# `source` is resolved through the registry (like a cash_management waterfall
-# rung), not passed as a string, so it is consumed here rather than falling
-# through to attrs.
 _SCHEDULE_KEYS = ("name", "source", "to", "mode", "amount", "month",
                   "owner_birth_year", "rmd_start_age", "divisors",
                   "start", "end")
@@ -79,7 +40,6 @@ def _parse_date(s: str) -> date:
 
 
 def _build_stream(spec: dict) -> Stream:
-    """Turn one ``streams`` entry into a Stream generator."""
     attrs = {k: v for k, v in spec.items() if k not in _STREAM_KEYS}
     return Stream(
         name=spec["name"],
@@ -92,11 +52,34 @@ def _build_stream(spec: dict) -> Stream:
     )
 
 
-def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
-    """Wire a CashManager from the 'cash_management' block, resolving each
-    waterfall source NAME to the actual account object (so the manager can
-    read basis / withholding and mutate basis on a sale).
+def _build_dividend_policy(account: BrokerageAccount, control: dict) -> DividendPolicy:
+    """Derive a DividendPolicy from a brokerage account's own attrs, mirroring
+    how InterestPolicy is derived from an asset account's ``apr``.
+
+    ``reinvest`` defaults to true (the common accumulation-phase case). When
+    false the cash needs somewhere to land: an explicit ``dividend_to`` wins,
+    else the cash-management account, else it's an error — inventing a
+    destination account would be exactly the kind of quiet wrongness this
+    model exists to avoid.
     """
+    attrs = account.attrs
+    reinvest = attrs.get("reinvest", True)
+    to = attrs.get("dividend_to") or control.get(
+        "cash_management", {}).get("account")
+    if not reinvest and not to:
+        raise ValueError(
+            f"account {account.name!r}: reinvest=false needs a 'dividend_to' "
+            f"account (or a cash_management block to default to)")
+    return DividendPolicy(
+        name=f"dividend:{account.name}",
+        source=account,
+        qualified_fraction=attrs.get("qualified_fraction", 1),
+        reinvest=bool(reinvest),
+        to=to,
+    )
+
+
+def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
     waterfall = []
     for rung in spec.get("waterfall", []):
         name = rung["source"]
@@ -114,7 +97,6 @@ def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
 
 
 def _build_shock(spec: dict) -> Shock:
-    """Turn one ``shocks`` entry into a Shock generator (one-off event)."""
     attrs = {k: v for k, v in spec.items() if k not in _SHOCK_KEYS}
     return Shock(
         name=spec["name"],
@@ -127,9 +109,6 @@ def _build_shock(spec: dict) -> Shock:
 
 
 def _build_schedule(spec: dict, registry: dict) -> Schedule:
-    """Turn one ``schedules`` entry into a Schedule generator, resolving
-    ``source`` to the actual account object (so fund_from/basis/withholding
-    are the live account state, same as the cash-management waterfall)."""
     name = spec["source"]
     if name not in registry:
         raise KeyError(f"schedule source {name!r} is not a declared account")
@@ -151,8 +130,6 @@ def _build_schedule(spec: dict, registry: dict) -> Schedule:
 
 
 def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
-    """Wire a TaxEngine from the 'tax' block. Cash for settlement defaults to
-    the cash-management account, else Assets:Checking."""
     cash = spec.get("cash_account") or control.get(
         "cash_management", {}).get("account", "Assets:Checking")
     return TaxEngine(
@@ -162,16 +139,18 @@ def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
         std_deduction=spec.get("std_deduction", DEFAULT_STD),
         ss_inclusion=spec.get("ss_inclusion", DEFAULT_SS_INCLUSION),
         settle_month=spec.get("settle_month", 4),
+        gate_character=spec.get("gate_character"),
+        gate_prefixes=[tuple(p) for p in spec["gate_prefixes"]]
+                      if spec.get("gate_prefixes") else None,
     )
 
 
 def build(control: dict) -> tuple[Engine, Simulation, int]:
-    """Build (engine, simulation, years) from a parsed control dict."""
     engine = Engine()
     objects: list[SimObject] = []
-    opening_legs: list[Posting] = []       # asset legs (full market value)
-    gain_legs: list[Posting] = []          # embedded unrealized-gain legs
-    registry: dict = {}   # name -> account object, for the cash-manager wiring
+    opening_legs: list[Posting] = []
+    gain_legs: list[Posting] = []
+    registry: dict = {}
 
     for spec in control.get("accounts", []):
         cls = _ACCOUNT_TYPES[spec["type"]]
@@ -183,9 +162,6 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
         opening = money(spec.get("opening", 0))
 
-        # A brokerage always carries an explicit basis so both the opening
-        # split and fund_from read the same value; default it to the full
-        # opening (a freshly bought lot with no embedded gain) when unset.
         if isinstance(account, BrokerageAccount) and "basis" not in account.attrs:
             account.attrs["basis"] = opening
 
@@ -194,9 +170,6 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
                 Posting(account.name, opening, owner=attrs.get("owner"),
                         meta={"kind": "opening"})
             )
-            # Embedded day-zero gain rides into Equity:UnrealizedGains so the
-            # invariant UnrealizedGains == -(mv - basis) holds from t0; only the
-            # basis portion lands against Equity:Opening (handled by the contra).
             if isinstance(account, BrokerageAccount):
                 embedded = money(opening - money(account.attrs["basis"]))
                 if embedded != ZERO:
@@ -205,7 +178,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
                                 meta={"kind": "opening"})
                     )
 
-        if isinstance(account, AssetAccount) and money(attrs.get("apr", 0)) != ZERO:
+        if isinstance(account, BrokerageAccount) and money(attrs.get("dividend_yield", 0)) != ZERO:
+            objects.append(_build_dividend_policy(account, control))
+        elif isinstance(account, AssetAccount) and money(attrs.get("apr", 0)) != ZERO:
             objects.append(
                 InterestPolicy(name=f"interest:{account.name}", source=account)
             )
@@ -216,15 +191,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
     for spec in control.get("shocks", []):
         objects.append(_build_shock(spec))
 
-    # Schedules resolve `source` against the registry, so this must run after
-    # the accounts loop above has populated it (same ordering constraint as
-    # the cash-management waterfall, below).
     for spec in control.get("schedules", []):
         objects.append(_build_schedule(spec, registry))
 
-    # One balanced opening transaction. Equity:Opening absorbs BASIS (the asset
-    # legs net of the embedded-gain legs); Equity:UnrealizedGains absorbs the
-    # embedded gain. The whole thing still sums to zero on day zero.
     if opening_legs:
         legs = opening_legs + gain_legs
         contra = -sum((p.amount for p in legs), ZERO)
@@ -252,11 +221,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
 
 def build_scenario(root: dict, name: str) -> tuple[Engine, Simulation, int]:
-    """Resolve ``name``'s extends chain into a flat scenario, then build it."""
     return build(resolve(root.get("scenarios", {}), name))
 
 
 def load(path: str, scenario: str) -> tuple[Engine, Simulation, int]:
-    """Load all_scenarios.json and build the named scenario."""
     with open(path) as fh:
         return build_scenario(json.load(fh), scenario)
