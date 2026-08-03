@@ -78,6 +78,21 @@ DEFAULT_LTCG = [
     (_INF, Decimal("0.20")),
 ]
 DEFAULT_STD = money(29200)
+# Single-filer tables, same year as the MFJ figures above. A surviving spouse
+# files Single from the year AFTER the death. The bands are NOT half the joint
+# ones — that asymmetry is the survivor's penalty, and it is the reason a
+# first death has to move the whole schedule rather than scale one input.
+DEFAULT_SINGLE_BRACKETS = [
+    (money(11600), Decimal("0.10")), (money(47150), Decimal("0.12")),
+    (money(100525), Decimal("0.22")), (money(191950), Decimal("0.24")),
+    (money(243725), Decimal("0.32")), (money(609350), Decimal("0.35")),
+    (_INF, Decimal("0.37")),
+]
+DEFAULT_SINGLE_LTCG = [
+    (money(47025), Decimal("0.00")), (money(518900), Decimal("0.15")),
+    (_INF, Decimal("0.20")),
+]
+DEFAULT_SINGLE_STD = money(14600)
 DEFAULT_SS_INCLUSION = Decimal("0.85")
 DEFAULT_SAFE_HARBOR = Decimal("1.10")
 DEFAULT_SALT_CAP = money(10000)
@@ -208,6 +223,8 @@ class TaxEngine:
         self.std_deduction = money(std_deduction)
         self.ss_inclusion = Decimal(str(ss_inclusion))
         self.settle_month = int(settle_month)
+        # Mutable: Estate flips this to "single" the year after a death.
+        self.filing_status = "mfj"
         # Exact-match table wins over the ordered prefix fallback; a caller
         # supplying gate_character only overrides/extends the defaults
         # rather than replacing the whole table.
@@ -264,6 +281,30 @@ class TaxEngine:
             if account.startswith(prefix):
                 return character
         return ORDINARY
+
+    def set_filing_status(self, status: str = "single", brackets=None,
+                          ltcg_brackets=None, std_deduction=None) -> None:
+        """Swap the whole rate schedule. Called by Estate, never by the loop.
+
+        Replacing brackets/std_deduction IN PLACE, rather than keying every
+        lookup on a status string, leaves _accrue and quarterly_amount
+        untouched: they already read self.brackets. A filing-status change is
+        then a mutation of this object, which is what a death is everywhere
+        else in the model too.
+        """
+        self.filing_status = status
+        if status == "single":
+            brackets = brackets or DEFAULT_SINGLE_BRACKETS
+            ltcg_brackets = ltcg_brackets or DEFAULT_SINGLE_LTCG
+            if std_deduction is None:
+                std_deduction = DEFAULT_SINGLE_STD
+        if brackets is not None:
+            self.brackets = [(money(c), Decimal(str(r))) for c, r in brackets]
+        if ltcg_brackets is not None:
+            self.ltcg_brackets = [(money(c), Decimal(str(r)))
+                                  for c, r in ltcg_brackets]
+        if std_deduction is not None:
+            self.std_deduction = money(std_deduction)
 
     # --- prepaid buckets ---------------------------------------------------
 

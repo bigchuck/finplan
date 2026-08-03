@@ -18,6 +18,7 @@ from .generators import (
     DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
     Schedule, Shock, Stream,
 )
+from .legacy import Death, Estate
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import resolve
 from .simobject import SimObject
@@ -216,6 +217,20 @@ def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
     )
 
 
+def _build_estate(spec: dict, objects: list, tax_engine) -> Estate:
+    deaths = [
+        Death(owner=d["owner"], when=_parse_date(d["when"]),
+              survivor=d.get("survivor"))
+        for d in spec.get("deaths", [])
+    ]
+    if not deaths:
+        raise ValueError("'legacy' block declares no deaths; omit the block "
+                         "entirely rather than leaving it empty")
+    return Estate(deaths=deaths, objects=objects, tax_engine=tax_engine,
+                  heir_rate=spec.get("heir_rate", 0),
+                  single=spec.get("single"))
+
+
 def build(control: dict) -> tuple[Engine, Simulation, int]:
     engine = Engine()
     objects: list[SimObject] = []
@@ -287,9 +302,16 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
     if "tax" in control:
         tax_engine = _build_tax_engine(control["tax"], control)
 
+    estate = None
+    if "legacy" in control:
+        # Built last: it holds live references to the object list it mutates
+        # and to the TaxEngine whose schedule it swaps.
+        estate = _build_estate(control["legacy"], objects, tax_engine)
+
     sim = Simulation(engine=engine, objects=objects,
                      start=_parse_date(control["start"]),
-                     cash_manager=cash_manager, tax_engine=tax_engine)
+                     cash_manager=cash_manager, tax_engine=tax_engine,
+                     estate=estate)
     return engine, sim, int(control.get("years", 1))
 
 

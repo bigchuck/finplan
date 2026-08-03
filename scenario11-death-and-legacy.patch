@@ -1,0 +1,184 @@
+--- a/__init__.py
++++ b/__init__.py
+@@ -15,6 +15,7 @@
+     ScheduleEvent, schedule_report, Shock, Stream,
+ )
+ from .cashmanager import CashManager, Source, FundingEvent
++from .legacy import Death, Estate, BequestReport
+ from .taxengine import (
+     TaxEngine, TaxYearResult, SettlementEvent, EstimateEvent,
+     ORDINARY, PREFERENTIAL, SS, EXEMPT,
+@@ -39,6 +40,7 @@
+     "HELOCInterestPolicy", "HELOCPayment", "Schedule",
+     "ScheduleEvent", "schedule_report", "Shock", "Stream",
+     "CashManager", "Source", "FundingEvent",
++    "Death", "Estate", "BequestReport",
+     "TaxEngine", "TaxYearResult", "SettlementEvent", "EstimateEvent",
+     "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
+     "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP", "DEDUCTIBLE_INTEREST",
+--- a/cli.py
++++ b/cli.py
+@@ -44,6 +44,10 @@
+         print()
+         print(sim.tax_engine.report())
+ 
++    if sim.estate is not None:
++        print()
++        print(sim.estate.report())
++
+     schedules = [o for o in sim.objects if isinstance(o, Schedule)]
+     if schedules:
+         print()
+--- a/control.py
++++ b/control.py
+@@ -18,6 +18,7 @@
+     DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
+     Schedule, Shock, Stream,
+ )
++from .legacy import Death, Estate
+ from .primitives import Posting, Transaction, ZERO, money
+ from .scenarios import resolve
+ from .simobject import SimObject
+@@ -216,6 +217,20 @@
+     )
+ 
+ 
++def _build_estate(spec: dict, objects: list, tax_engine) -> Estate:
++    deaths = [
++        Death(owner=d["owner"], when=_parse_date(d["when"]),
++              survivor=d.get("survivor"))
++        for d in spec.get("deaths", [])
++    ]
++    if not deaths:
++        raise ValueError("'legacy' block declares no deaths; omit the block "
++                         "entirely rather than leaving it empty")
++    return Estate(deaths=deaths, objects=objects, tax_engine=tax_engine,
++                  heir_rate=spec.get("heir_rate", 0),
++                  single=spec.get("single"))
++
++
+ def build(control: dict) -> tuple[Engine, Simulation, int]:
+     engine = Engine()
+     objects: list[SimObject] = []
+@@ -287,9 +302,16 @@
+     if "tax" in control:
+         tax_engine = _build_tax_engine(control["tax"], control)
+ 
++    estate = None
++    if "legacy" in control:
++        # Built last: it holds live references to the object list it mutates
++        # and to the TaxEngine whose schedule it swaps.
++        estate = _build_estate(control["legacy"], objects, tax_engine)
++
+     sim = Simulation(engine=engine, objects=objects,
+                      start=_parse_date(control["start"]),
+-                     cash_manager=cash_manager, tax_engine=tax_engine)
++                     cash_manager=cash_manager, tax_engine=tax_engine,
++                     estate=estate)
+     return engine, sim, int(control.get("years", 1))
+ 
+ 
+--- a/simulation.py
++++ b/simulation.py
+@@ -32,15 +32,19 @@
+ 
+ class Simulation:
+     def __init__(self, engine: Engine, objects: list[SimObject],
+-                 start: date, cash_manager=None, tax_engine=None):
++                 start: date, cash_manager=None, tax_engine=None,
++                 estate=None):
+         self.engine = engine
+         self.objects = objects
+         self.start = start
+         self.cash_manager = cash_manager
+         self.tax_engine = tax_engine
++        self.estate = estate
+ 
+     def run(self, n_years: int) -> Engine:
+         for period in _months(self.start, n_years):
++            if self._transition(period):
++                break
+             self._accrue(period)
+             self._fund(period)
+             self._assess(period)
+@@ -48,6 +52,16 @@
+                 self._close(period)
+         return self.engine
+ 
++    def _transition(self, period: Period) -> bool:
++        """Fourth phase, and the only one that runs BEFORE accrue: death
++        mutates the object graph, and a benefit that stops this month has to
++        stop before this month's generators emit it. Returns True to halt —
++        past the terminal death there is no plan left to project.
++        """
++        if self.estate is None:
++            return False
++        return self.estate.transition(period, self.engine)
++
+     def _accrue(self, period: Period) -> None:
+         pending: list[Transaction] = []
+         for obj in self.objects:
+--- a/taxengine.py
++++ b/taxengine.py
+@@ -78,6 +78,21 @@
+     (_INF, Decimal("0.20")),
+ ]
+ DEFAULT_STD = money(29200)
++# Single-filer tables, same year as the MFJ figures above. A surviving spouse
++# files Single from the year AFTER the death. The bands are NOT half the joint
++# ones — that asymmetry is the survivor's penalty, and it is the reason a
++# first death has to move the whole schedule rather than scale one input.
++DEFAULT_SINGLE_BRACKETS = [
++    (money(11600), Decimal("0.10")), (money(47150), Decimal("0.12")),
++    (money(100525), Decimal("0.22")), (money(191950), Decimal("0.24")),
++    (money(243725), Decimal("0.32")), (money(609350), Decimal("0.35")),
++    (_INF, Decimal("0.37")),
++]
++DEFAULT_SINGLE_LTCG = [
++    (money(47025), Decimal("0.00")), (money(518900), Decimal("0.15")),
++    (_INF, Decimal("0.20")),
++]
++DEFAULT_SINGLE_STD = money(14600)
+ DEFAULT_SS_INCLUSION = Decimal("0.85")
+ DEFAULT_SAFE_HARBOR = Decimal("1.10")
+ DEFAULT_SALT_CAP = money(10000)
+@@ -208,6 +223,8 @@
+         self.std_deduction = money(std_deduction)
+         self.ss_inclusion = Decimal(str(ss_inclusion))
+         self.settle_month = int(settle_month)
++        # Mutable: Estate flips this to "single" the year after a death.
++        self.filing_status = "mfj"
+         # Exact-match table wins over the ordered prefix fallback; a caller
+         # supplying gate_character only overrides/extends the defaults
+         # rather than replacing the whole table.
+@@ -265,6 +282,30 @@
+                 return character
+         return ORDINARY
+ 
++    def set_filing_status(self, status: str = "single", brackets=None,
++                          ltcg_brackets=None, std_deduction=None) -> None:
++        """Swap the whole rate schedule. Called by Estate, never by the loop.
++
++        Replacing brackets/std_deduction IN PLACE, rather than keying every
++        lookup on a status string, leaves _accrue and quarterly_amount
++        untouched: they already read self.brackets. A filing-status change is
++        then a mutation of this object, which is what a death is everywhere
++        else in the model too.
++        """
++        self.filing_status = status
++        if status == "single":
++            brackets = brackets or DEFAULT_SINGLE_BRACKETS
++            ltcg_brackets = ltcg_brackets or DEFAULT_SINGLE_LTCG
++            if std_deduction is None:
++                std_deduction = DEFAULT_SINGLE_STD
++        if brackets is not None:
++            self.brackets = [(money(c), Decimal(str(r))) for c, r in brackets]
++        if ltcg_brackets is not None:
++            self.ltcg_brackets = [(money(c), Decimal(str(r)))
++                                  for c, r in ltcg_brackets]
++        if std_deduction is not None:
++            self.std_deduction = money(std_deduction)
++
+     # --- prepaid buckets ---------------------------------------------------
+ 
+     def withheld_account(self, year: int) -> str:

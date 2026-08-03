@@ -44,6 +44,10 @@ def main(argv=None) -> int:
         print()
         print(sim.tax_engine.report())
 
+    if sim.estate is not None:
+        print()
+        print(sim.estate.report())
+
     schedules = [o for o in sim.objects if isinstance(o, Schedule)]
     if schedules:
         print()
