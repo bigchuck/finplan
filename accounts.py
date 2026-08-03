@@ -45,6 +45,7 @@ from .simobject import SimObject
 ONE = money(1)
 RECOGNIZED = "Equity:Recognized"
 UNREALIZED = "Equity:UnrealizedGains"
+UNREALIZED_DEFERRED = "Equity:UnrealizedGains:Deferred"
 
 # Rates and fractions (apr, growth, dividend_yield, qualified_fraction) are
 # NEVER balances — cent-quantizing a rate like 0.0175 with `money()` silently
@@ -109,11 +110,40 @@ class AssetAccount(Account):
                           source=self.name)
 
 
-class RothAccount(AssetAccount):
+class TaxDeferredGrowth:
+    """Mixin: monthly compound growth with no gain recognition. Unlike
+    BrokerageAccount, there's no basis to preserve and nothing is realized —
+    an IRA withdrawal is taxed on the full amount regardless of how much of
+    it is "growth," and a Roth withdrawal is never taxed at all. The
+    offsetting leg goes to UNREALIZED_DEFERRED, not UNREALIZED, so this
+    never touches the brokerage-only invariant.
+    """
+
+    def apply_growth(self, period, engine: Engine) -> list[Transaction]:
+        mv = engine.balance(self.name)
+        growth = rate(self.attrs.get("growth", 0))
+        g = money(mv * (growth / Decimal(12)))
+        if g == ZERO:
+            return []
+        owner = self.attrs.get("owner")
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} tax-deferred growth @ {growth} annual",
+                postings=[
+                    Posting(self.name, g, owner=owner, meta={"kind": "growth"}),
+                    Posting(UNREALIZED_DEFERRED, -g, owner=owner,
+                            meta={"kind": "growth"}),
+                ],
+            )
+        ]
+
+
+class RothAccount(TaxDeferredGrowth, AssetAccount):
     pass
 
 
-class TraditionalIRAAccount(AssetAccount):
+class TraditionalIRAAccount(TaxDeferredGrowth, AssetAccount):
     @property
     def withholding_rate(self) -> Decimal:
         return money(self.attrs.get("withholding", "0.20"))

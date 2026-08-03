@@ -7,6 +7,7 @@ from .accounts import (
     Account, AssetAccount, LiabilityAccount, IncomeAccount,
     BrokerageAccount, TraditionalIRAAccount, RothAccount, Withdrawal,
     rate, check_unrealized, unrealized_gap, UnrealizedInvariantError,
+    TaxDeferredGrowth, UNREALIZED_DEFERRED,
 )
 from .generators import (
     Generator, Policy, InterestPolicy, DividendPolicy, Schedule,
@@ -29,6 +30,7 @@ __all__ = [
     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
     "BrokerageAccount", "TraditionalIRAAccount", "RothAccount", "Withdrawal",
     "rate", "check_unrealized", "unrealized_gap", "UnrealizedInvariantError",
+    "TaxDeferredGrowth", "UNREALIZED_DEFERRED",
     "Generator", "Policy", "InterestPolicy", "DividendPolicy", "Schedule",
     "ScheduleEvent", "schedule_report", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
