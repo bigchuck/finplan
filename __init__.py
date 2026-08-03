@@ -17,7 +17,8 @@ from .cashmanager import CashManager, Source, FundingEvent
 from .taxengine import (
     TaxEngine, TaxYearResult, SettlementEvent, EstimateEvent,
     ORDINARY, PREFERENTIAL, SS, EXEMPT,
-    DEFAULT_SAFE_HARBOR, ESTIMATE_MONTHS, ESTIMATE_JAN_QUARTER,
+    DEFAULT_SAFE_HARBOR, DEFAULT_SALT_CAP,
+    ESTIMATE_MONTHS, ESTIMATE_JAN_QUARTER,
     DEFAULT_GATE_CHARACTER, DEFAULT_GATE_PREFIXES,
 )
 from .simulation import Simulation, Period
@@ -37,7 +38,8 @@ __all__ = [
     "CashManager", "Source", "FundingEvent",
     "TaxEngine", "TaxYearResult", "SettlementEvent", "EstimateEvent",
     "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
-    "DEFAULT_SAFE_HARBOR", "ESTIMATE_MONTHS", "ESTIMATE_JAN_QUARTER",
+    "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP",
+    "ESTIMATE_MONTHS", "ESTIMATE_JAN_QUARTER",
     "DEFAULT_GATE_CHARACTER", "DEFAULT_GATE_PREFIXES",
     "Simulation", "Period",
     "resolve", "deep_merge", "names", "ScenarioError",

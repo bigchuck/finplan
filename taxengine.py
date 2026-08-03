@@ -26,9 +26,35 @@ read rather than a journal you have to scan. Settlement sums the whole
 prefix, so splitting the withholding leg into its own ``:Withheld`` leaf
 later needs no change in this module.
 
+STATE TAX AND SALT
+------------------
+State rides inside this engine as a parallel accrual, not a second engine:
+its own brackets, its own standard deduction, its own gate->character table
+(states routinely exempt SS outright, or tax capital gains as ordinary).
+Its accounts sit deliberately OUTSIDE the federal prepaid prefix --
+
+    Liabilities:StateTaxPayable:TY{y}
+    Expenses:Tax:State
+
+-- because ``_settle_prior`` sums the WHOLE ``Assets:PrepaidTax:TY{y}``
+prefix, and anything parked under it would be swallowed by the federal
+settlement.
+
+State tax is deductible federally in the year PAID, not the year accrued.
+With state estimates out of scope, the entire state liability leaves as cash
+at the spring settlement, so TY(Y) state tax accrued in December Y is paid in
+April Y+1 and deducted on the federal TY(Y+1) return. The December federal
+accrual therefore reads a state payment posted eight months earlier: no
+circularity, no fixed point to iterate.
+
+``state_paid[calendar_year]`` is the SALT running total, incremented where
+the state settlement posts rather than recovered by scanning the journal.
+The federal deduction is then max(standard, min(SALT, cap) + other itemized).
+
 DEFERRED (named): underpayment penalties, the annualized-income installment
-method (Form 2210 Sch. AI), state estimates, and deriving the 110% AGI test
-rather than taking ``safe_harbor_multiple`` on faith.
+method (Form 2210 Sch. AI), state estimates, state withholding, state
+preferential rates, and deriving the 110% AGI test rather than taking
+``safe_harbor_multiple`` on faith.
 """
 
 from __future__ import annotations
@@ -54,6 +80,7 @@ DEFAULT_LTCG = [
 DEFAULT_STD = money(29200)
 DEFAULT_SS_INCLUSION = Decimal("0.85")
 DEFAULT_SAFE_HARBOR = Decimal("1.10")
+DEFAULT_SALT_CAP = money(10000)
 
 # IRS estimated-payment calendar for tax year n: Q1/Q2/Q3 fall inside year n,
 # but Q4 falls in JANUARY of year n+1. The cash date and the tax year come
@@ -133,6 +160,10 @@ class TaxYearResult:
     # spring settlement zeroes the prepaid buckets, and next year's Q2/Q3
     # estimates are sized off this number months AFTER that wipe.
     withheld: Decimal = ZERO
+    # The federal deduction actually taken (standard or itemized, whichever
+    # won) and the parallel state accrual for the same year.
+    deduction: Decimal = ZERO
+    state_tax: Decimal = ZERO
 
 
 @dataclass
@@ -143,6 +174,7 @@ class SettlementEvent:
     paid: Decimal
     withheld: Decimal = ZERO
     estimated: Decimal = ZERO
+    jurisdiction: str = "federal"
 
 
 @dataclass
@@ -161,7 +193,7 @@ class TaxEngine:
                  estimates=False,
                  safe_harbor_multiple=DEFAULT_SAFE_HARBOR,
                  credit_withholding=True, prior_year_tax=0,
-                 prior_year_withholding=0):
+                 prior_year_withholding=0, state=None, deductions=None):
         self.cash_account = cash_account
         self.brackets = [(money(c), Decimal(str(r)))
                          for c, r in (brackets or DEFAULT_BRACKETS)]
@@ -188,17 +220,41 @@ class TaxEngine:
         # a year the simulation never ran.
         self.prior_year_tax = money(prior_year_tax)
         self.prior_year_withholding = money(prior_year_withholding)
+        # State is opt-in the same way estimates are: no "state" block means
+        # no state accrual, so every pre-S9.5 control file keeps its cash
+        # path untouched. A flat "rate" is sugar for a one-tier bracket list,
+        # so both shapes go through the one _bracket_tax path.
+        self.state = dict(state) if state else None
+        if self.state is not None:
+            brackets_ = self.state.get("brackets") or [
+                (_INF, self.state.get("rate", 0))]
+            self.state_brackets = [(money(c), Decimal(str(r)))
+                                   for c, r in brackets_]
+            self.state_std = money(self.state.get("std_deduction", 0))
+            self.state_gate_character = dict(DEFAULT_GATE_CHARACTER)
+            self.state_gate_character.update(
+                self.state.get("gate_character") or {})
+            self.state_gate_prefixes = (
+                tuple(self.state["gate_prefixes"])
+                if self.state.get("gate_prefixes") else DEFAULT_GATE_PREFIXES)
+        ded = deductions or {}
+        self.salt_cap = money(ded.get("salt_cap", DEFAULT_SALT_CAP))
+        self.other_itemized = money(ded.get("other_itemized", 0))
+        # SALT is tracked by CALENDAR year of payment, not tax year accrued.
+        self.state_paid: dict[int, Decimal] = {}
         self.results: dict[int, TaxYearResult] = {}
         self.events: list[SettlementEvent] = []
         self.estimate_events: list[EstimateEvent] = []
 
-    def character_of(self, account: str) -> str:
+    def character_of(self, account: str, state: bool = False) -> str:
         """Exact match first, then ordered prefix fallback, else ORDINARY —
         an unrecognized gate is taxed as ordinary income rather than silently
         dropped, since dropping it would understate tax owed."""
-        if account in self.gate_character:
-            return self.gate_character[account]
-        for prefix, character in self.gate_prefixes:
+        table = self.state_gate_character if state else self.gate_character
+        prefixes = self.state_gate_prefixes if state else self.gate_prefixes
+        if account in table:
+            return table[account]
+        for prefix, character in prefixes:
             if account.startswith(prefix):
                 return character
         return ORDINARY
@@ -213,6 +269,23 @@ class TaxEngine:
 
     def prepaid_prefix(self, year: int) -> str:
         return f"Assets:PrepaidTax:TY{year}"
+
+    def state_payable_account(self, year: int) -> str:
+        """Outside the prepaid prefix on purpose — see the module docstring."""
+        return f"Liabilities:StateTaxPayable:TY{year}"
+
+    # --- the deduction choice ----------------------------------------------
+
+    def itemized_for(self, year: int) -> Decimal:
+        """SALT paid during CALENDAR ``year``, capped, plus other itemized."""
+        salt = money(self.state_paid.get(year, ZERO))
+        if salt > self.salt_cap:
+            salt = self.salt_cap
+        return money(salt + self.other_itemized)
+
+    def deduction_for(self, year: int) -> Decimal:
+        itemized = self.itemized_for(year)
+        return itemized if itemized > self.std_deduction else self.std_deduction
 
     # --- quarterly estimates (fund phase) ----------------------------------
 
@@ -273,16 +346,20 @@ class TaxEngine:
     def settle(self, period, engine: Engine) -> None:
         if period.month == 12:
             self._accrue(period, engine)
+            if self.state is not None:
+                self._accrue_state(period, engine)
         if period.month == self.settle_month:
             self._settle_prior(period, engine)
+            if self.state is not None:
+                self._settle_state_prior(period, engine)
 
-    def _gather(self, engine: Engine):
+    def _gather(self, engine: Engine, state: bool = False):
         ordinary = ss = preferential = ZERO
         for acct in engine.accounts("Income:"):
             amt = -engine.balance(acct)
             if amt == ZERO:
                 continue
-            character = self.character_of(acct)
+            character = self.character_of(acct, state=state)
             if character == EXEMPT:
                 continue
             elif character == SS:
@@ -297,7 +374,9 @@ class TaxEngine:
         year = period.year
         ordinary, ss, preferential = self._gather(engine)
         taxable_ss = money(ss * self.ss_inclusion)
-        ord_taxable = money(max(ZERO, ordinary + taxable_ss - self.std_deduction))
+        # SALT paid THIS calendar year, not the year being accrued.
+        deduction = self.deduction_for(year)
+        ord_taxable = money(max(ZERO, ordinary + taxable_ss - deduction))
         ord_tax = _bracket_tax(ord_taxable, self.brackets)
         pref_tax = _ltcg_tax(preferential, ord_taxable, self.ltcg_brackets)
         tax = money(ord_tax + pref_tax)
@@ -309,7 +388,8 @@ class TaxEngine:
         self.results[year] = TaxYearResult(
             year=year, ordinary=ordinary, taxable_ss=taxable_ss,
             preferential=preferential, ordinary_tax=ord_tax,
-            preferential_tax=pref_tax, tax=tax, withheld=withheld)
+            preferential_tax=pref_tax, tax=tax, withheld=withheld,
+            deduction=deduction)
         if tax == ZERO:
             return
         payable = f"Liabilities:TaxPayable:TY{year}"
@@ -323,6 +403,64 @@ class TaxEngine:
             ],
             meta=dict(meta),
         ))
+
+    def _accrue_state(self, period, engine: Engine) -> None:
+        """Parallel December accrual on the state's own schedule.
+
+        Everything the state includes is taxed on one bracket ladder:
+        preferential income is folded into the base rather than given its own
+        stacked schedule, because states that grant a preferential rate are
+        out of scope. A state that exempts a gate outright says so in
+        ``gate_character``, and the gate never reaches this arithmetic.
+        """
+        year = period.year
+        ordinary, ss, preferential = self._gather(engine, state=True)
+        taxable_ss = money(ss * self.ss_inclusion)
+        base = money(max(ZERO, ordinary + taxable_ss + preferential
+                         - self.state_std))
+        tax = _bracket_tax(base, self.state_brackets)
+        result = self.results.get(year)
+        if result is not None:
+            result.state_tax = tax
+        if tax == ZERO:
+            return
+        payable = self.state_payable_account(year)
+        meta = {"kind": "state-tax-accrual", "tax_year": year}
+        engine.post(Transaction(
+            date=period.date,
+            description=f"Accrue {year} state income tax",
+            postings=[
+                Posting("Expenses:Tax:State", tax, meta=dict(meta)),
+                Posting(payable, -tax, meta=dict(meta)),
+            ],
+            meta=dict(meta),
+        ))
+
+    def _settle_state_prior(self, period, engine: Engine) -> None:
+        """The whole state liability leaves as cash — no state estimates and
+        no state withholding, so there is nothing to offset. The payment is
+        booked into ``state_paid`` under the CALENDAR year the cash moved,
+        which is what the federal deduction reads."""
+        y = period.year - 1
+        acct = self.state_payable_account(y)
+        payable = money(-engine.balance(acct))
+        if payable == ZERO:
+            return
+        meta = {"kind": "state-tax-settle", "tax_year": y}
+        engine.post(Transaction(
+            date=period.date,
+            description=f"Settle TY{y} state income tax",
+            postings=[
+                Posting(acct, payable, meta=dict(meta)),
+                Posting(self.cash_account, -payable, meta=dict(meta)),
+            ],
+            meta=dict(meta),
+        ))
+        self.state_paid[period.year] = money(
+            self.state_paid.get(period.year, ZERO) + payable)
+        self.events.append(SettlementEvent(
+            year=y, payable=payable, prepaid=ZERO, paid=payable,
+            jurisdiction="state"))
 
     def _settle_prior(self, period, engine: Engine) -> None:
         y = period.year - 1
@@ -369,12 +507,21 @@ class TaxEngine:
                 f"  TY{y}: ordinary {r.ordinary:,.2f} (+SS {r.taxable_ss:,.2f}) "
                 f"preferential {r.preferential:,.2f} -> tax {r.tax:,.2f} "
                 f"[ord {r.ordinary_tax:,.2f} + pref {r.preferential_tax:,.2f}]")
+            if r.state_tax != ZERO:
+                lines.append(
+                    f"    deduction {r.deduction:,.2f}, "
+                    f"state tax {r.state_tax:,.2f}")
         for e in self.estimate_events:
             lines.append(
                 f"  {e.date}  TY{e.year} Q{e.quarter} estimate "
                 f"{e.amount:,.2f}")
         for e in self.events:
             verb = "refund" if e.paid < ZERO else "paid"
+            if e.jurisdiction != "federal":
+                lines.append(
+                    f"  settled TY{e.year} {e.jurisdiction}: "
+                    f"payable {e.payable:,.2f}, {verb} {abs(e.paid):,.2f}")
+                continue
             lines.append(
                 f"  settled TY{e.year}: payable {e.payable:,.2f}, "
                 f"prepaid {e.prepaid:,.2f} (withheld {e.withheld:,.2f} "

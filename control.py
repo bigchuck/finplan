@@ -153,6 +153,10 @@ def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
         credit_withholding=est.get("credit_withholding", True),
         prior_year_tax=est.get("prior_year_tax", 0),
         prior_year_withholding=est.get("prior_year_withholding", 0),
+        # Same opt-in discipline: absent "state" means no state accrual at
+        # all, so pre-S9.5 control files keep their exact cash path.
+        state=spec.get("state"),
+        deductions=spec.get("deductions"),
     )
 
 
