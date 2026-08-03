@@ -10,7 +10,9 @@ from .accounts import (
     TraditionalIRAAccount, UNREALIZED,
 )
 from .cashmanager import CashManager, Source
-from .taxengine import TaxEngine, DEFAULT_STD, DEFAULT_SS_INCLUSION
+from .taxengine import (
+    TaxEngine, DEFAULT_SAFE_HARBOR, DEFAULT_STD, DEFAULT_SS_INCLUSION,
+)
 from .engine import Engine
 from .generators import DividendPolicy, InterestPolicy, Schedule, Shock, Stream
 from .primitives import Posting, Transaction, ZERO, money
@@ -132,6 +134,7 @@ def _build_schedule(spec: dict, registry: dict) -> Schedule:
 def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
     cash = spec.get("cash_account") or control.get(
         "cash_management", {}).get("account", "Assets:Checking")
+    est = spec.get("estimates") or {}
     return TaxEngine(
         cash_account=cash,
         brackets=spec.get("brackets"),
@@ -142,6 +145,14 @@ def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
         gate_character=spec.get("gate_character"),
         gate_prefixes=[tuple(p) for p in spec["gate_prefixes"]]
                       if spec.get("gate_prefixes") else None,
+        # Presence of the "estimates" block is the switch: absent means off,
+        # so every pre-S9 control file keeps its exact cash path.
+        estimates=bool(est),
+        safe_harbor_multiple=est.get("safe_harbor_multiple",
+                                     DEFAULT_SAFE_HARBOR),
+        credit_withholding=est.get("credit_withholding", True),
+        prior_year_tax=est.get("prior_year_tax", 0),
+        prior_year_withholding=est.get("prior_year_withholding", 0),
     )
 
 

@@ -64,6 +64,12 @@ class Simulation:
             obj.settle_effects(period, self.engine)
 
     def _fund(self, period: Period) -> None:
+        # Estimated tax goes out FIRST. It is a known, dated obligation, so
+        # the CashManager has to see the ledger with that cash already gone
+        # when it decides whether the month breached the floor. Reversing
+        # these two leaves every estimate unfunded until the next tick.
+        if self.tax_engine is not None:
+            self.tax_engine.pay_estimates(period, self.engine)
         if self.cash_manager is not None:
             self.cash_manager.cover_shortfall(period, self.engine)
 

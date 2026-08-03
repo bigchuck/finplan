@@ -15,8 +15,9 @@ from .generators import (
 )
 from .cashmanager import CashManager, Source, FundingEvent
 from .taxengine import (
-    TaxEngine, TaxYearResult, SettlementEvent,
+    TaxEngine, TaxYearResult, SettlementEvent, EstimateEvent,
     ORDINARY, PREFERENTIAL, SS, EXEMPT,
+    DEFAULT_SAFE_HARBOR, ESTIMATE_MONTHS, ESTIMATE_JAN_QUARTER,
     DEFAULT_GATE_CHARACTER, DEFAULT_GATE_PREFIXES,
 )
 from .simulation import Simulation, Period
@@ -34,8 +35,9 @@ __all__ = [
     "Generator", "Policy", "InterestPolicy", "DividendPolicy", "Schedule",
     "ScheduleEvent", "schedule_report", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
-    "TaxEngine", "TaxYearResult", "SettlementEvent",
+    "TaxEngine", "TaxYearResult", "SettlementEvent", "EstimateEvent",
     "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
+    "DEFAULT_SAFE_HARBOR", "ESTIMATE_MONTHS", "ESTIMATE_JAN_QUARTER",
     "DEFAULT_GATE_CHARACTER", "DEFAULT_GATE_PREFIXES",
     "Simulation", "Period",
     "resolve", "deep_merge", "names", "ScenarioError",
