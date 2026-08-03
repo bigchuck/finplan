@@ -41,6 +41,7 @@ from decimal import ROUND_HALF_UP
 from .engine import Engine
 from .primitives import Decimal, Posting, Transaction, ZERO, money
 from .simobject import SimObject
+from .taxengine import DEDUCTIBLE_INTEREST
 
 ONE = money(1)
 RECOGNIZED = "Equity:Recognized"
@@ -75,6 +76,16 @@ class Account(SimObject):
     @abstractmethod
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         raise NotImplementedError
+
+    def eligible(self, period) -> bool:
+        """May this account be tapped as a funding source this period?
+
+        Lives on the account, not on the waterfall rung, because the
+        constraint is a property of the instrument: a credit line that has
+        not opened yet or has already matured, an IRA before 59½. Default
+        yes; HELOCAccount is the first real override.
+        """
+        return True
 
     def step(self, period, engine: Engine) -> list[Transaction]:
         return self.apply_growth(period, engine)
@@ -269,6 +280,82 @@ def _recognize(income_gate: str, amount: Decimal, period, owner,
 class LiabilityAccount(Account):
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         return []
+
+
+class HELOCAccount(LiabilityAccount):
+    """A revolving credit line that can sit in the CashManager waterfall.
+
+    This is the fourth ``fund_from`` shape and by far the simplest: drawing
+    on a line of credit is BORROWING, not liquidating, so there is no
+    recognition pair at all — borrowed money is not income. Cash goes up, the
+    liability goes further negative, and that is the whole transaction.
+
+    SIGN TRAP: a liability balance is NEGATIVE. ``AssetAccount.capacity`` is
+    ``balance - floor``; here it is ``credit_limit - owed - floor``. Same
+    method name, inverted arithmetic. The per-source floor reads as a
+    borrowing reserve — headroom you decline to touch.
+
+    Interest is NOT ``apply_growth``. It is a posted expense against a gate,
+    which is a Policy emission, exactly as an asset's interest income is —
+    the same split the module docstring draws for AssetAccount. Interest
+    capitalizes into the balance, so a payment is a pure cash->liability
+    transfer and the interest/principal split never needs computing: it falls
+    out of the balance evolution instead.
+
+    A capitalizing balance can exceed ``credit_limit``. Real lenders forbid
+    that, but clamping it here would invent a repayment that never happened;
+    instead ``capacity`` floors at zero (no further draws) and the balance is
+    left to tell the truth.
+    """
+
+    @property
+    def credit_limit(self) -> Decimal:
+        return money(self.attrs.get("credit_limit", 0))
+
+    @property
+    def withholding_rate(self) -> Decimal:
+        return ZERO   # nothing is withheld on borrowed money
+
+    @property
+    def interest_account(self) -> str:
+        """Post-TCJA, only acquisition/improvement debt is deductible. The
+        flag routes the expense to a gate the TaxEngine reads, or to one it
+        ignores — no tax logic lives on this class."""
+        return (DEDUCTIBLE_INTEREST if self.attrs.get("deductible")
+                else "Expenses:Interest:HELOC")
+
+    def eligible(self, period) -> bool:
+        pm = (period.year, period.month)
+        opened = self.attrs.get("opened")
+        maturity = self.attrs.get("maturity")
+        if opened is not None and pm < (opened.year, opened.month):
+            return False
+        # At maturity the line closes: the balance is still owed, but no new
+        # draw can be taken against it.
+        if maturity is not None and pm >= (maturity.year, maturity.month):
+            return False
+        return True
+
+    def capacity(self, source_floor, engine: Engine) -> Decimal:
+        owed = money(-engine.balance(self.name))
+        avail = money(self.credit_limit - owed - money(source_floor))
+        return avail if avail > ZERO else ZERO
+
+    def fund_from(self, gross: Decimal, cash_account: str, period,
+                  engine: Engine, meta: dict) -> Withdrawal:
+        owner = self.attrs.get("owner")
+        draw = Transaction(
+            date=period.date,
+            description=f"Draw on {self.name} to fund {cash_account}",
+            postings=[
+                Posting(cash_account, gross, owner=owner, meta=dict(meta)),
+                Posting(self.name, -gross, owner=owner, meta=dict(meta)),
+            ],
+            meta=dict(meta),
+        )
+        # net == gross: no withholding, and no recognition transaction.
+        return Withdrawal(txns=[draw], gross=gross, net=gross,
+                          source=self.name)
 
 
 class IncomeAccount(Account):

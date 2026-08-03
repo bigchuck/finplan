@@ -82,6 +82,12 @@ DEFAULT_SS_INCLUSION = Decimal("0.85")
 DEFAULT_SAFE_HARBOR = Decimal("1.10")
 DEFAULT_SALT_CAP = money(10000)
 
+# Interest posted to this gate flows into the itemized bucket; interest on a
+# non-qualifying loan goes to a plain Expenses:Interest:* account and never
+# reaches the return. Routing by ACCOUNT rather than by a flag the TaxEngine
+# has to be told about keeps the same read-the-ledger shape as _gather.
+DEDUCTIBLE_INTEREST = "Expenses:Interest:Deductible"
+
 # IRS estimated-payment calendar for tax year n: Q1/Q2/Q3 fall inside year n,
 # but Q4 falls in JANUARY of year n+1. The cash date and the tax year come
 # apart — which is precisely why the prepaid buckets carry a TY tag.
@@ -276,15 +282,24 @@ class TaxEngine:
 
     # --- the deduction choice ----------------------------------------------
 
-    def itemized_for(self, year: int) -> Decimal:
-        """SALT paid during CALENDAR ``year``, capped, plus other itemized."""
+    def itemized_for(self, year: int, engine: Engine | None = None) -> Decimal:
+        """SALT paid during CALENDAR ``year``, capped, plus other itemized,
+        plus deductible interest accrued so far this year.
+
+        The interest term is read from the ledger rather than registered by
+        whatever posted it, so a new deductible-interest source needs no wiring
+        here — it just posts to DEDUCTIBLE_INTEREST. ``engine`` is optional so
+        the SALT-only arithmetic stays unit-testable without a ledger.
+        """
         salt = money(self.state_paid.get(year, ZERO))
         if salt > self.salt_cap:
             salt = self.salt_cap
-        return money(salt + self.other_itemized)
+        interest = (money(engine.balance(DEDUCTIBLE_INTEREST))
+                    if engine is not None else ZERO)
+        return money(salt + self.other_itemized + interest)
 
-    def deduction_for(self, year: int) -> Decimal:
-        itemized = self.itemized_for(year)
+    def deduction_for(self, year: int, engine: Engine | None = None) -> Decimal:
+        itemized = self.itemized_for(year, engine)
         return itemized if itemized > self.std_deduction else self.std_deduction
 
     # --- quarterly estimates (fund phase) ----------------------------------
@@ -375,7 +390,7 @@ class TaxEngine:
         ordinary, ss, preferential = self._gather(engine)
         taxable_ss = money(ss * self.ss_inclusion)
         # SALT paid THIS calendar year, not the year being accrued.
-        deduction = self.deduction_for(year)
+        deduction = self.deduction_for(year, engine)
         ord_taxable = money(max(ZERO, ordinary + taxable_ss - deduction))
         ord_tax = _bracket_tax(ord_taxable, self.brackets)
         pref_tax = _ltcg_tax(preferential, ord_taxable, self.ltcg_brackets)

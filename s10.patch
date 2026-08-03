@@ -1,0 +1,506 @@
+--- a/accounts.py
++++ b/accounts.py
+@@ -41,6 +41,7 @@
+ from .engine import Engine
+ from .primitives import Decimal, Posting, Transaction, ZERO, money
+ from .simobject import SimObject
++from .taxengine import DEDUCTIBLE_INTEREST
+ 
+ ONE = money(1)
+ RECOGNIZED = "Equity:Recognized"
+@@ -76,6 +77,16 @@
+     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
+         raise NotImplementedError
+ 
++    def eligible(self, period) -> bool:
++        """May this account be tapped as a funding source this period?
++
++        Lives on the account, not on the waterfall rung, because the
++        constraint is a property of the instrument: a credit line that has
++        not opened yet or has already matured, an IRA before 59½. Default
++        yes; HELOCAccount is the first real override.
++        """
++        return True
++
+     def step(self, period, engine: Engine) -> list[Transaction]:
+         return self.apply_growth(period, engine)
+ 
+@@ -271,6 +282,82 @@
+         return []
+ 
+ 
++class HELOCAccount(LiabilityAccount):
++    """A revolving credit line that can sit in the CashManager waterfall.
++
++    This is the fourth ``fund_from`` shape and by far the simplest: drawing
++    on a line of credit is BORROWING, not liquidating, so there is no
++    recognition pair at all — borrowed money is not income. Cash goes up, the
++    liability goes further negative, and that is the whole transaction.
++
++    SIGN TRAP: a liability balance is NEGATIVE. ``AssetAccount.capacity`` is
++    ``balance - floor``; here it is ``credit_limit - owed - floor``. Same
++    method name, inverted arithmetic. The per-source floor reads as a
++    borrowing reserve — headroom you decline to touch.
++
++    Interest is NOT ``apply_growth``. It is a posted expense against a gate,
++    which is a Policy emission, exactly as an asset's interest income is —
++    the same split the module docstring draws for AssetAccount. Interest
++    capitalizes into the balance, so a payment is a pure cash->liability
++    transfer and the interest/principal split never needs computing: it falls
++    out of the balance evolution instead.
++
++    A capitalizing balance can exceed ``credit_limit``. Real lenders forbid
++    that, but clamping it here would invent a repayment that never happened;
++    instead ``capacity`` floors at zero (no further draws) and the balance is
++    left to tell the truth.
++    """
++
++    @property
++    def credit_limit(self) -> Decimal:
++        return money(self.attrs.get("credit_limit", 0))
++
++    @property
++    def withholding_rate(self) -> Decimal:
++        return ZERO   # nothing is withheld on borrowed money
++
++    @property
++    def interest_account(self) -> str:
++        """Post-TCJA, only acquisition/improvement debt is deductible. The
++        flag routes the expense to a gate the TaxEngine reads, or to one it
++        ignores — no tax logic lives on this class."""
++        return (DEDUCTIBLE_INTEREST if self.attrs.get("deductible")
++                else "Expenses:Interest:HELOC")
++
++    def eligible(self, period) -> bool:
++        pm = (period.year, period.month)
++        opened = self.attrs.get("opened")
++        maturity = self.attrs.get("maturity")
++        if opened is not None and pm < (opened.year, opened.month):
++            return False
++        # At maturity the line closes: the balance is still owed, but no new
++        # draw can be taken against it.
++        if maturity is not None and pm >= (maturity.year, maturity.month):
++            return False
++        return True
++
++    def capacity(self, source_floor, engine: Engine) -> Decimal:
++        owed = money(-engine.balance(self.name))
++        avail = money(self.credit_limit - owed - money(source_floor))
++        return avail if avail > ZERO else ZERO
++
++    def fund_from(self, gross: Decimal, cash_account: str, period,
++                  engine: Engine, meta: dict) -> Withdrawal:
++        owner = self.attrs.get("owner")
++        draw = Transaction(
++            date=period.date,
++            description=f"Draw on {self.name} to fund {cash_account}",
++            postings=[
++                Posting(cash_account, gross, owner=owner, meta=dict(meta)),
++                Posting(self.name, -gross, owner=owner, meta=dict(meta)),
++            ],
++            meta=dict(meta),
++        )
++        # net == gross: no withholding, and no recognition transaction.
++        return Withdrawal(txns=[draw], gross=gross, net=gross,
++                          source=self.name)
++
++
+ class IncomeAccount(Account):
+     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
+         return []
+--- a/generators.py
++++ b/generators.py
+@@ -22,7 +22,10 @@
+ from datetime import date
+ from decimal import Decimal
+ 
+-from .accounts import AssetAccount, BrokerageAccount, TraditionalIRAAccount, Withdrawal, rate
++from .accounts import (
++    AssetAccount, BrokerageAccount, HELOCAccount, TraditionalIRAAccount,
++    Withdrawal, rate,
++)
+ from .engine import Engine
+ from .primitives import Posting, Transaction, ZERO, money
+ from .simobject import SimObject
+@@ -122,6 +125,43 @@
+         ]
+ 
+ 
++class HELOCInterestPolicy(Policy):
++    """Interest CHARGED on a credit line — the mirror of InterestPolicy.
++
++    Same Policy shape (balance x rate, monthly), opposite direction: the
++    source balance is negative, so ``monthly_amount`` returns a negative
++    figure and the charge is its magnitude. The offsetting leg capitalizes
++    into the liability rather than paying out as cash, which is what makes
++    HELOCPayment a pure transfer.
++
++    The gate comes from the account (``interest_account``), so deductible and
++    non-deductible lines route themselves and no tax logic lands here.
++    """
++
++    def __init__(self, name: str, source: HELOCAccount, attrs=None):
++        super().__init__(name, source, rate_attr="rate", attrs=attrs)
++
++    def emit(self, period, engine: Engine) -> list[Transaction]:
++        charge = money(-self.monthly_amount(engine))
++        if charge <= ZERO:
++            return []
++        owner = self.source.attrs.get("owner")
++        gate = self.source.interest_account
++        return [
++            Transaction(
++                date=period.date,
++                description=f"Interest on {self.source.name} @ "
++                            f"{self.source.attrs.get('rate')} APR",
++                postings=[
++                    Posting(gate, charge, owner=owner,
++                            meta={"kind": "heloc-interest"}),
++                    Posting(self.source.name, -charge, owner=owner,
++                            meta={"kind": "heloc-interest"}),
++                ],
++            )
++        ]
++
++
+ class DividendPolicy(Policy):
+     """State-driven monthly dividend on a brokerage account.
+ 
+@@ -220,6 +260,96 @@
+             self._pending_basis = ZERO
+ 
+ 
++class HELOCPayment(Generator):
++    """Payments against a credit line, plus the maturity balloon.
++
++    Because interest capitalizes (see HELOCAccount), a payment is a PURE
++    cash->liability transfer. There is no interest/principal split to
++    compute: the split is an artifact of cash-basis presentation, and this
++    model accrues. A fixed monthly payment amortizes the line correctly all
++    by itself, purely through the balance evolution.
++
++    ``interest_only`` needs no ordering hack. Every step() reads the
++    tick-open ledger, so the figure this computes from ``owed * monthly
++    rate`` is identical to the one HELOCInterestPolicy computed from the same
++    snapshot, whichever runs first — the balance holds flat by construction.
++
++    The balloon re-fires every month at or after maturity until the line is
++    clear, so a month where cash could not cover it is retried rather than
++    silently forgiven.
++    """
++
++    _MODES = ("none", "interest_only", "fixed")
++
++    def __init__(self, name: str, source: HELOCAccount, frm: str,
++                 mode: str = "none", amount=None, maturity=None, attrs=None):
++        super().__init__(name, attrs)
++        self.source = source
++        self.frm = frm
++        self.mode = mode
++        self.amount = money(amount) if amount is not None else None
++        self.maturity = maturity
++        if self.mode not in self._MODES:
++            raise ValueError(
++                f"HELOCPayment {name!r}: unknown mode {mode!r}; "
++                f"expected one of {self._MODES}")
++        if self.mode == "fixed" and self.amount is None:
++            raise ValueError(
++                f"HELOCPayment {name!r}: mode 'fixed' requires 'amount'")
++
++    def _monthly_rate(self) -> Decimal:
++        return rate(self.source.attrs.get("rate", 0)) / Decimal(12)
++
++    def _is_balloon(self, period) -> bool:
++        return (self.maturity is not None
++                and (period.year, period.month)
++                >= (self.maturity.year, self.maturity.month))
++
++    def emit(self, period, engine: Engine) -> list[Transaction]:
++        owed = money(-engine.balance(self.source.name))
++        if owed <= ZERO:
++            return []
++
++        balloon = self._is_balloon(period)
++        if balloon:
++            # Clear the line in ONE month. Pay the tick-open balance PLUS the
++            # charge HELOCInterestPolicy is computing from that identical
++            # snapshot this same tick — same inputs, same arithmetic, so this
++            # lands exactly on zero instead of leaving a residual interest
++            # tail to sweep over the following months.
++            pay = money(owed + money(owed * self._monthly_rate()))
++        elif self.mode == "none":
++            return []
++        elif self.mode == "interest_only":
++            pay = money(owed * self._monthly_rate())
++        else:
++            pay = self.amount
++
++        # Never overshoot into a positive (asset-shaped) liability balance.
++        # Exempt the balloon: overshooting is exactly what it is doing, and
++        # the interest leg lands in the same tick to meet it.
++        if not balloon and pay > owed:
++            pay = owed
++        if pay <= ZERO:
++            return []
++
++        owner = self.source.attrs.get("owner")
++        kind = "heloc-balloon" if balloon else "heloc-payment"
++        label = "Balloon payoff of" if balloon else "Payment on"
++        return [
++            Transaction(
++                date=period.date,
++                description=f"{label} {self.source.name}",
++                postings=[
++                    Posting(self.source.name, pay, owner=owner,
++                            meta={"kind": kind, "generator": self.name}),
++                    Posting(self.frm, -pay, owner=owner,
++                            meta={"kind": kind, "generator": self.name}),
++                ],
++            )
++        ]
++
++
+ class Shock(Generator):
+     def __init__(self, name: str, frm: str, to: str, amount, when, attrs=None):
+         super().__init__(name, attrs)
+--- a/control.py
++++ b/control.py
+@@ -6,15 +6,18 @@
+ from datetime import date
+ 
+ from .accounts import (
+-    AssetAccount, BrokerageAccount, LiabilityAccount, RothAccount,
+-    TraditionalIRAAccount, UNREALIZED,
++    AssetAccount, BrokerageAccount, HELOCAccount, LiabilityAccount,
++    RothAccount, TraditionalIRAAccount, UNREALIZED,
+ )
+ from .cashmanager import CashManager, Source
+ from .taxengine import (
+     TaxEngine, DEFAULT_SAFE_HARBOR, DEFAULT_STD, DEFAULT_SS_INCLUSION,
+ )
+ from .engine import Engine
+-from .generators import DividendPolicy, InterestPolicy, Schedule, Shock, Stream
++from .generators import (
++    DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
++    Schedule, Shock, Stream,
++)
+ from .primitives import Posting, Transaction, ZERO, money
+ from .scenarios import resolve
+ from .simobject import SimObject
+@@ -25,6 +28,7 @@
+ _ACCOUNT_TYPES = {
+     "asset": AssetAccount,
+     "liability": LiabilityAccount,
++    "heloc": HELOCAccount,
+     "brokerage": BrokerageAccount,
+     "traditional_ira": TraditionalIRAAccount,
+     "roth": RothAccount,
+@@ -81,6 +85,58 @@
+     )
+ 
+ 
++def _build_heloc(account: HELOCAccount, control: dict) -> list:
++    """Derive a HELOC's generators from its own attrs, mirroring how a
++    dividend policy is derived from a brokerage account's.
++
++    Date strings on the account are parsed IN PLACE here: the generic account
++    loop builds attrs verbatim from JSON, but ``eligible()`` compares against
++    date objects. Contained to this one function on purpose.
++    """
++    for key in ("opened", "maturity"):
++        if isinstance(account.attrs.get(key), str):
++            account.attrs[key] = _parse_date(account.attrs[key])
++
++    cash = account.attrs.get("payment_from") or control.get(
++        "cash_management", {}).get("account")
++    fee = money(account.attrs.get("origination_fee", 0))
++    pay_spec = account.attrs.get("payment") or {}
++    mode = pay_spec.get("mode", "none")
++
++    if cash is None and (fee != ZERO or mode != "none"):
++        raise ValueError(
++            f"account {account.name!r}: fees or payments need a "
++            f"'payment_from' account (or a cash_management block to "
++            f"default to)")
++
++    objects = [
++        HELOCInterestPolicy(name=f"interest:{account.name}", source=account),
++        HELOCPayment(
++            name=f"payment:{account.name}",
++            source=account,
++            frm=cash,
++            # Default 'none' (pure capitalization) is deliberate: a silent
++            # default that held the balance flat would flatter the plan.
++            mode=mode,
++            amount=pay_spec.get("amount"),
++            maturity=account.attrs.get("maturity"),
++        ),
++    ]
++    if fee != ZERO:
++        opened = account.attrs.get("opened")
++        if opened is None:
++            raise ValueError(
++                f"account {account.name!r}: 'origination_fee' needs 'opened' "
++                f"to date the charge")
++        # Establishment costs are a plain expense, not deductible interest
++        # and not amortized points — named as a deferral, not modelled.
++        objects.append(Shock(
++            name=f"fee:{account.name}", frm=cash, to="Expenses:LoanFees",
++            amount=fee, when=opened,
++            attrs={"owner": account.attrs.get("owner")}))
++    return objects
++
++
+ def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
+     waterfall = []
+     for rung in spec.get("waterfall", []):
+@@ -193,7 +249,9 @@
+                                 meta={"kind": "opening"})
+                     )
+ 
+-        if isinstance(account, BrokerageAccount) and money(attrs.get("dividend_yield", 0)) != ZERO:
++        if isinstance(account, HELOCAccount):
++            objects.extend(_build_heloc(account, control))
++        elif isinstance(account, BrokerageAccount) and money(attrs.get("dividend_yield", 0)) != ZERO:
+             objects.append(_build_dividend_policy(account, control))
+         elif isinstance(account, AssetAccount) and money(attrs.get("apr", 0)) != ZERO:
+             objects.append(
+--- a/taxengine.py
++++ b/taxengine.py
+@@ -82,6 +82,12 @@
+ DEFAULT_SAFE_HARBOR = Decimal("1.10")
+ DEFAULT_SALT_CAP = money(10000)
+ 
++# Interest posted to this gate flows into the itemized bucket; interest on a
++# non-qualifying loan goes to a plain Expenses:Interest:* account and never
++# reaches the return. Routing by ACCOUNT rather than by a flag the TaxEngine
++# has to be told about keeps the same read-the-ledger shape as _gather.
++DEDUCTIBLE_INTEREST = "Expenses:Interest:Deductible"
++
+ # IRS estimated-payment calendar for tax year n: Q1/Q2/Q3 fall inside year n,
+ # but Q4 falls in JANUARY of year n+1. The cash date and the tax year come
+ # apart — which is precisely why the prepaid buckets carry a TY tag.
+@@ -276,15 +282,24 @@
+ 
+     # --- the deduction choice ----------------------------------------------
+ 
+-    def itemized_for(self, year: int) -> Decimal:
+-        """SALT paid during CALENDAR ``year``, capped, plus other itemized."""
++    def itemized_for(self, year: int, engine: Engine | None = None) -> Decimal:
++        """SALT paid during CALENDAR ``year``, capped, plus other itemized,
++        plus deductible interest accrued so far this year.
++
++        The interest term is read from the ledger rather than registered by
++        whatever posted it, so a new deductible-interest source needs no wiring
++        here — it just posts to DEDUCTIBLE_INTEREST. ``engine`` is optional so
++        the SALT-only arithmetic stays unit-testable without a ledger.
++        """
+         salt = money(self.state_paid.get(year, ZERO))
+         if salt > self.salt_cap:
+             salt = self.salt_cap
+-        return money(salt + self.other_itemized)
++        interest = (money(engine.balance(DEDUCTIBLE_INTEREST))
++                    if engine is not None else ZERO)
++        return money(salt + self.other_itemized + interest)
+ 
+-    def deduction_for(self, year: int) -> Decimal:
+-        itemized = self.itemized_for(year)
++    def deduction_for(self, year: int, engine: Engine | None = None) -> Decimal:
++        itemized = self.itemized_for(year, engine)
+         return itemized if itemized > self.std_deduction else self.std_deduction
+ 
+     # --- quarterly estimates (fund phase) ----------------------------------
+@@ -375,7 +390,7 @@
+         ordinary, ss, preferential = self._gather(engine)
+         taxable_ss = money(ss * self.ss_inclusion)
+         # SALT paid THIS calendar year, not the year being accrued.
+-        deduction = self.deduction_for(year)
++        deduction = self.deduction_for(year, engine)
+         ord_taxable = money(max(ZERO, ordinary + taxable_ss - deduction))
+         ord_tax = _bracket_tax(ord_taxable, self.brackets)
+         pref_tax = _ltcg_tax(preferential, ord_taxable, self.ltcg_brackets)
+--- a/cashmanager.py
++++ b/cashmanager.py
+@@ -28,7 +28,7 @@
+ from dataclasses import dataclass, field
+ from datetime import date
+ 
+-from .accounts import AssetAccount, Withdrawal, ONE
++from .accounts import Account, AssetAccount, Withdrawal, ONE
+ from .engine import Engine
+ from .primitives import Decimal, ZERO, money
+ 
+@@ -38,14 +38,20 @@
+ 
+ @dataclass
+ class Source:
+-    """One rung of the waterfall: an account object and its own floor."""
+-    account: AssetAccount
++    """One rung of the waterfall: an account object and its own floor.
++
++    Not necessarily an AssetAccount — a HELOCAccount is a rung that BORROWS
++    to meet the shortfall instead of liquidating. The rung needs only the
++    three-method source protocol: withholding_rate, capacity, fund_from.
++    """
++    account: Account
+     floor: Decimal = ZERO
+ 
+     def eligible(self, period) -> bool:
+-        # Placeholder predicate. A real one might gate an IRA before 59½, or a
+-        # source by calendar. Kept trivially true until a scenario needs more.
+-        return True
++        # The constraint belongs to the instrument (a line that has not
++        # opened or has matured, an IRA before 59½), so it lives on the
++        # account and the rung just asks.
++        return self.account.eligible(period)
+ 
+ 
+ @dataclass
+--- a/__init__.py
++++ b/__init__.py
+@@ -5,19 +5,20 @@
+ from .simobject import SimObject
+ from .accounts import (
+     Account, AssetAccount, LiabilityAccount, IncomeAccount,
+-    BrokerageAccount, TraditionalIRAAccount, RothAccount, Withdrawal,
+-    rate, check_unrealized, unrealized_gap, UnrealizedInvariantError,
++    BrokerageAccount, TraditionalIRAAccount, RothAccount, HELOCAccount,
++    Withdrawal, rate, check_unrealized, unrealized_gap, UnrealizedInvariantError,
+     TaxDeferredGrowth, UNREALIZED_DEFERRED,
+ )
+ from .generators import (
+-    Generator, Policy, InterestPolicy, DividendPolicy, Schedule,
++    Generator, Policy, InterestPolicy, DividendPolicy,
++    HELOCInterestPolicy, HELOCPayment, Schedule,
+     ScheduleEvent, schedule_report, Shock, Stream,
+ )
+ from .cashmanager import CashManager, Source, FundingEvent
+ from .taxengine import (
+     TaxEngine, TaxYearResult, SettlementEvent, EstimateEvent,
+     ORDINARY, PREFERENTIAL, SS, EXEMPT,
+-    DEFAULT_SAFE_HARBOR, DEFAULT_SALT_CAP,
++    DEFAULT_SAFE_HARBOR, DEFAULT_SALT_CAP, DEDUCTIBLE_INTEREST,
+     ESTIMATE_MONTHS, ESTIMATE_JAN_QUARTER,
+     DEFAULT_GATE_CHARACTER, DEFAULT_GATE_PREFIXES,
+ )
+@@ -30,15 +31,17 @@
+     "Engine", "LedgerLeak",
+     "SimObject",
+     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
+-    "BrokerageAccount", "TraditionalIRAAccount", "RothAccount", "Withdrawal",
++    "BrokerageAccount", "TraditionalIRAAccount", "RothAccount",
++    "HELOCAccount", "Withdrawal",
+     "rate", "check_unrealized", "unrealized_gap", "UnrealizedInvariantError",
+     "TaxDeferredGrowth", "UNREALIZED_DEFERRED",
+-    "Generator", "Policy", "InterestPolicy", "DividendPolicy", "Schedule",
++    "Generator", "Policy", "InterestPolicy", "DividendPolicy",
++    "HELOCInterestPolicy", "HELOCPayment", "Schedule",
+     "ScheduleEvent", "schedule_report", "Shock", "Stream",
+     "CashManager", "Source", "FundingEvent",
+     "TaxEngine", "TaxYearResult", "SettlementEvent", "EstimateEvent",
+     "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
+-    "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP",
++    "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP", "DEDUCTIBLE_INTEREST",
+     "ESTIMATE_MONTHS", "ESTIMATE_JAN_QUARTER",
+     "DEFAULT_GATE_CHARACTER", "DEFAULT_GATE_PREFIXES",
+     "Simulation", "Period",

@@ -6,15 +6,18 @@ import json
 from datetime import date
 
 from .accounts import (
-    AssetAccount, BrokerageAccount, LiabilityAccount, RothAccount,
-    TraditionalIRAAccount, UNREALIZED,
+    AssetAccount, BrokerageAccount, HELOCAccount, LiabilityAccount,
+    RothAccount, TraditionalIRAAccount, UNREALIZED,
 )
 from .cashmanager import CashManager, Source
 from .taxengine import (
     TaxEngine, DEFAULT_SAFE_HARBOR, DEFAULT_STD, DEFAULT_SS_INCLUSION,
 )
 from .engine import Engine
-from .generators import DividendPolicy, InterestPolicy, Schedule, Shock, Stream
+from .generators import (
+    DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
+    Schedule, Shock, Stream,
+)
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import resolve
 from .simobject import SimObject
@@ -25,6 +28,7 @@ OPENING = "Equity:Opening"
 _ACCOUNT_TYPES = {
     "asset": AssetAccount,
     "liability": LiabilityAccount,
+    "heloc": HELOCAccount,
     "brokerage": BrokerageAccount,
     "traditional_ira": TraditionalIRAAccount,
     "roth": RothAccount,
@@ -79,6 +83,58 @@ def _build_dividend_policy(account: BrokerageAccount, control: dict) -> Dividend
         reinvest=bool(reinvest),
         to=to,
     )
+
+
+def _build_heloc(account: HELOCAccount, control: dict) -> list:
+    """Derive a HELOC's generators from its own attrs, mirroring how a
+    dividend policy is derived from a brokerage account's.
+
+    Date strings on the account are parsed IN PLACE here: the generic account
+    loop builds attrs verbatim from JSON, but ``eligible()`` compares against
+    date objects. Contained to this one function on purpose.
+    """
+    for key in ("opened", "maturity"):
+        if isinstance(account.attrs.get(key), str):
+            account.attrs[key] = _parse_date(account.attrs[key])
+
+    cash = account.attrs.get("payment_from") or control.get(
+        "cash_management", {}).get("account")
+    fee = money(account.attrs.get("origination_fee", 0))
+    pay_spec = account.attrs.get("payment") or {}
+    mode = pay_spec.get("mode", "none")
+
+    if cash is None and (fee != ZERO or mode != "none"):
+        raise ValueError(
+            f"account {account.name!r}: fees or payments need a "
+            f"'payment_from' account (or a cash_management block to "
+            f"default to)")
+
+    objects = [
+        HELOCInterestPolicy(name=f"interest:{account.name}", source=account),
+        HELOCPayment(
+            name=f"payment:{account.name}",
+            source=account,
+            frm=cash,
+            # Default 'none' (pure capitalization) is deliberate: a silent
+            # default that held the balance flat would flatter the plan.
+            mode=mode,
+            amount=pay_spec.get("amount"),
+            maturity=account.attrs.get("maturity"),
+        ),
+    ]
+    if fee != ZERO:
+        opened = account.attrs.get("opened")
+        if opened is None:
+            raise ValueError(
+                f"account {account.name!r}: 'origination_fee' needs 'opened' "
+                f"to date the charge")
+        # Establishment costs are a plain expense, not deductible interest
+        # and not amortized points — named as a deferral, not modelled.
+        objects.append(Shock(
+            name=f"fee:{account.name}", frm=cash, to="Expenses:LoanFees",
+            amount=fee, when=opened,
+            attrs={"owner": account.attrs.get("owner")}))
+    return objects
 
 
 def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
@@ -193,7 +249,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
                                 meta={"kind": "opening"})
                     )
 
-        if isinstance(account, BrokerageAccount) and money(attrs.get("dividend_yield", 0)) != ZERO:
+        if isinstance(account, HELOCAccount):
+            objects.extend(_build_heloc(account, control))
+        elif isinstance(account, BrokerageAccount) and money(attrs.get("dividend_yield", 0)) != ZERO:
             objects.append(_build_dividend_policy(account, control))
         elif isinstance(account, AssetAccount) and money(attrs.get("apr", 0)) != ZERO:
             objects.append(

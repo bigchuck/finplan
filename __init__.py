@@ -5,19 +5,20 @@ from .engine import Engine, LedgerLeak
 from .simobject import SimObject
 from .accounts import (
     Account, AssetAccount, LiabilityAccount, IncomeAccount,
-    BrokerageAccount, TraditionalIRAAccount, RothAccount, Withdrawal,
-    rate, check_unrealized, unrealized_gap, UnrealizedInvariantError,
+    BrokerageAccount, TraditionalIRAAccount, RothAccount, HELOCAccount,
+    Withdrawal, rate, check_unrealized, unrealized_gap, UnrealizedInvariantError,
     TaxDeferredGrowth, UNREALIZED_DEFERRED,
 )
 from .generators import (
-    Generator, Policy, InterestPolicy, DividendPolicy, Schedule,
+    Generator, Policy, InterestPolicy, DividendPolicy,
+    HELOCInterestPolicy, HELOCPayment, Schedule,
     ScheduleEvent, schedule_report, Shock, Stream,
 )
 from .cashmanager import CashManager, Source, FundingEvent
 from .taxengine import (
     TaxEngine, TaxYearResult, SettlementEvent, EstimateEvent,
     ORDINARY, PREFERENTIAL, SS, EXEMPT,
-    DEFAULT_SAFE_HARBOR, DEFAULT_SALT_CAP,
+    DEFAULT_SAFE_HARBOR, DEFAULT_SALT_CAP, DEDUCTIBLE_INTEREST,
     ESTIMATE_MONTHS, ESTIMATE_JAN_QUARTER,
     DEFAULT_GATE_CHARACTER, DEFAULT_GATE_PREFIXES,
 )
@@ -30,15 +31,17 @@ __all__ = [
     "Engine", "LedgerLeak",
     "SimObject",
     "Account", "AssetAccount", "LiabilityAccount", "IncomeAccount",
-    "BrokerageAccount", "TraditionalIRAAccount", "RothAccount", "Withdrawal",
+    "BrokerageAccount", "TraditionalIRAAccount", "RothAccount",
+    "HELOCAccount", "Withdrawal",
     "rate", "check_unrealized", "unrealized_gap", "UnrealizedInvariantError",
     "TaxDeferredGrowth", "UNREALIZED_DEFERRED",
-    "Generator", "Policy", "InterestPolicy", "DividendPolicy", "Schedule",
+    "Generator", "Policy", "InterestPolicy", "DividendPolicy",
+    "HELOCInterestPolicy", "HELOCPayment", "Schedule",
     "ScheduleEvent", "schedule_report", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
     "TaxEngine", "TaxYearResult", "SettlementEvent", "EstimateEvent",
     "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
-    "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP",
+    "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP", "DEDUCTIBLE_INTEREST",
     "ESTIMATE_MONTHS", "ESTIMATE_JAN_QUARTER",
     "DEFAULT_GATE_CHARACTER", "DEFAULT_GATE_PREFIXES",
     "Simulation", "Period",

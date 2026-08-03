@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from .accounts import AssetAccount, Withdrawal, ONE
+from .accounts import Account, AssetAccount, Withdrawal, ONE
 from .engine import Engine
 from .primitives import Decimal, ZERO, money
 
@@ -38,14 +38,20 @@ HARD = "reserve-exhausted"
 
 @dataclass
 class Source:
-    """One rung of the waterfall: an account object and its own floor."""
-    account: AssetAccount
+    """One rung of the waterfall: an account object and its own floor.
+
+    Not necessarily an AssetAccount — a HELOCAccount is a rung that BORROWS
+    to meet the shortfall instead of liquidating. The rung needs only the
+    three-method source protocol: withholding_rate, capacity, fund_from.
+    """
+    account: Account
     floor: Decimal = ZERO
 
     def eligible(self, period) -> bool:
-        # Placeholder predicate. A real one might gate an IRA before 59½, or a
-        # source by calendar. Kept trivially true until a scenario needs more.
-        return True
+        # The constraint belongs to the instrument (a line that has not
+        # opened or has matured, an IRA before 59½), so it lives on the
+        # account and the rung just asks.
+        return self.account.eligible(period)
 
 
 @dataclass

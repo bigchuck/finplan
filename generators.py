@@ -22,7 +22,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from .accounts import AssetAccount, BrokerageAccount, TraditionalIRAAccount, Withdrawal, rate
+from .accounts import (
+    AssetAccount, BrokerageAccount, HELOCAccount, TraditionalIRAAccount,
+    Withdrawal, rate,
+)
 from .engine import Engine
 from .primitives import Posting, Transaction, ZERO, money
 from .simobject import SimObject
@@ -117,6 +120,43 @@ class InterestPolicy(Policy):
                             meta={"kind": "interest"}),
                     Posting(self.income_account, -interest, owner=owner,
                             meta={"kind": "interest"}),
+                ],
+            )
+        ]
+
+
+class HELOCInterestPolicy(Policy):
+    """Interest CHARGED on a credit line — the mirror of InterestPolicy.
+
+    Same Policy shape (balance x rate, monthly), opposite direction: the
+    source balance is negative, so ``monthly_amount`` returns a negative
+    figure and the charge is its magnitude. The offsetting leg capitalizes
+    into the liability rather than paying out as cash, which is what makes
+    HELOCPayment a pure transfer.
+
+    The gate comes from the account (``interest_account``), so deductible and
+    non-deductible lines route themselves and no tax logic lands here.
+    """
+
+    def __init__(self, name: str, source: HELOCAccount, attrs=None):
+        super().__init__(name, source, rate_attr="rate", attrs=attrs)
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        charge = money(-self.monthly_amount(engine))
+        if charge <= ZERO:
+            return []
+        owner = self.source.attrs.get("owner")
+        gate = self.source.interest_account
+        return [
+            Transaction(
+                date=period.date,
+                description=f"Interest on {self.source.name} @ "
+                            f"{self.source.attrs.get('rate')} APR",
+                postings=[
+                    Posting(gate, charge, owner=owner,
+                            meta={"kind": "heloc-interest"}),
+                    Posting(self.source.name, -charge, owner=owner,
+                            meta={"kind": "heloc-interest"}),
                 ],
             )
         ]
@@ -218,6 +258,96 @@ class DividendPolicy(Policy):
         if self._pending_basis != ZERO:
             self.source.credit_basis(self._pending_basis)
             self._pending_basis = ZERO
+
+
+class HELOCPayment(Generator):
+    """Payments against a credit line, plus the maturity balloon.
+
+    Because interest capitalizes (see HELOCAccount), a payment is a PURE
+    cash->liability transfer. There is no interest/principal split to
+    compute: the split is an artifact of cash-basis presentation, and this
+    model accrues. A fixed monthly payment amortizes the line correctly all
+    by itself, purely through the balance evolution.
+
+    ``interest_only`` needs no ordering hack. Every step() reads the
+    tick-open ledger, so the figure this computes from ``owed * monthly
+    rate`` is identical to the one HELOCInterestPolicy computed from the same
+    snapshot, whichever runs first — the balance holds flat by construction.
+
+    The balloon re-fires every month at or after maturity until the line is
+    clear, so a month where cash could not cover it is retried rather than
+    silently forgiven.
+    """
+
+    _MODES = ("none", "interest_only", "fixed")
+
+    def __init__(self, name: str, source: HELOCAccount, frm: str,
+                 mode: str = "none", amount=None, maturity=None, attrs=None):
+        super().__init__(name, attrs)
+        self.source = source
+        self.frm = frm
+        self.mode = mode
+        self.amount = money(amount) if amount is not None else None
+        self.maturity = maturity
+        if self.mode not in self._MODES:
+            raise ValueError(
+                f"HELOCPayment {name!r}: unknown mode {mode!r}; "
+                f"expected one of {self._MODES}")
+        if self.mode == "fixed" and self.amount is None:
+            raise ValueError(
+                f"HELOCPayment {name!r}: mode 'fixed' requires 'amount'")
+
+    def _monthly_rate(self) -> Decimal:
+        return rate(self.source.attrs.get("rate", 0)) / Decimal(12)
+
+    def _is_balloon(self, period) -> bool:
+        return (self.maturity is not None
+                and (period.year, period.month)
+                >= (self.maturity.year, self.maturity.month))
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        owed = money(-engine.balance(self.source.name))
+        if owed <= ZERO:
+            return []
+
+        balloon = self._is_balloon(period)
+        if balloon:
+            # Clear the line in ONE month. Pay the tick-open balance PLUS the
+            # charge HELOCInterestPolicy is computing from that identical
+            # snapshot this same tick — same inputs, same arithmetic, so this
+            # lands exactly on zero instead of leaving a residual interest
+            # tail to sweep over the following months.
+            pay = money(owed + money(owed * self._monthly_rate()))
+        elif self.mode == "none":
+            return []
+        elif self.mode == "interest_only":
+            pay = money(owed * self._monthly_rate())
+        else:
+            pay = self.amount
+
+        # Never overshoot into a positive (asset-shaped) liability balance.
+        # Exempt the balloon: overshooting is exactly what it is doing, and
+        # the interest leg lands in the same tick to meet it.
+        if not balloon and pay > owed:
+            pay = owed
+        if pay <= ZERO:
+            return []
+
+        owner = self.source.attrs.get("owner")
+        kind = "heloc-balloon" if balloon else "heloc-payment"
+        label = "Balloon payoff of" if balloon else "Payment on"
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{label} {self.source.name}",
+                postings=[
+                    Posting(self.source.name, pay, owner=owner,
+                            meta={"kind": kind, "generator": self.name}),
+                    Posting(self.frm, -pay, owner=owner,
+                            meta={"kind": kind, "generator": self.name}),
+                ],
+            )
+        ]
 
 
 class Shock(Generator):
