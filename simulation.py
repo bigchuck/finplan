@@ -32,21 +32,35 @@ def _months(start: date, n_years: int):
 
 class Simulation:
     def __init__(self, engine: Engine, objects: list[SimObject],
-                 start: date, cash_manager=None, tax_engine=None):
+                 start: date, cash_manager=None, tax_engine=None,
+                 estate=None):
         self.engine = engine
         self.objects = objects
         self.start = start
         self.cash_manager = cash_manager
         self.tax_engine = tax_engine
+        self.estate = estate
 
     def run(self, n_years: int) -> Engine:
         for period in _months(self.start, n_years):
+            if self._transition(period):
+                break
             self._accrue(period)
             self._fund(period)
             self._assess(period)
             if period.is_year_end:
                 self._close(period)
         return self.engine
+
+    def _transition(self, period: Period) -> bool:
+        """Fourth phase, and the only one that runs BEFORE accrue: death
+        mutates the object graph, and a benefit that stops this month has to
+        stop before this month's generators emit it. Returns True to halt —
+        past the terminal death there is no plan left to project.
+        """
+        if self.estate is None:
+            return False
+        return self.estate.transition(period, self.engine)
 
     def _accrue(self, period: Period) -> None:
         pending: list[Transaction] = []
