@@ -24,4 +24,4 @@ Thumbs.db
 .vscode/
 
 # patches
-.patch
+*.patch
