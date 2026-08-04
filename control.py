@@ -11,7 +11,8 @@ from .accounts import (
 )
 from .cashmanager import CashManager, Source
 from .taxengine import (
-    TaxEngine, DEFAULT_SAFE_HARBOR, DEFAULT_STD, DEFAULT_SS_INCLUSION,
+    TaxEngine, TaxLawChange, DEFAULT_SAFE_HARBOR, DEFAULT_STD,
+    DEFAULT_SS_INCLUSION,
 )
 from .engine import Engine
 from .generators import (
@@ -188,6 +189,19 @@ def _build_schedule(spec: dict, registry: dict) -> Schedule:
     )
 
 
+def _build_law_change(spec: dict) -> TaxLawChange:
+    return TaxLawChange(
+        year=int(spec["year"]),
+        brackets=spec.get("brackets"),
+        ltcg_brackets=spec.get("ltcg_brackets"),
+        std_deduction=spec.get("std_deduction"),
+        ss_inclusion=spec.get("ss_inclusion"),
+        safe_harbor_multiple=spec.get("safe_harbor_multiple"),
+        salt_cap=spec.get("salt_cap"),
+        other_itemized=spec.get("other_itemized"),
+    )
+
+
 def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
     cash = spec.get("cash_account") or control.get(
         "cash_management", {}).get("account", "Assets:Checking")
@@ -214,6 +228,7 @@ def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
         # all, so pre-S9.5 control files keep their exact cash path.
         state=spec.get("state"),
         deductions=spec.get("deductions"),
+        law_changes=[_build_law_change(c) for c in spec.get("law_changes", [])],
     )
 
 

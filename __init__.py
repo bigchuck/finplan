@@ -17,7 +17,7 @@ from .generators import (
 from .cashmanager import CashManager, Source, FundingEvent
 from .legacy import Death, Estate, BequestReport
 from .taxengine import (
-    TaxEngine, TaxYearResult, SettlementEvent, EstimateEvent,
+    TaxEngine, TaxLawChange, TaxYearResult, SettlementEvent, EstimateEvent,
     ORDINARY, PREFERENTIAL, SS, EXEMPT,
     DEFAULT_SAFE_HARBOR, DEFAULT_SALT_CAP, DEDUCTIBLE_INTEREST,
     ESTIMATE_MONTHS, ESTIMATE_JAN_QUARTER,
@@ -41,7 +41,7 @@ __all__ = [
     "ScheduleEvent", "schedule_report", "Shock", "Stream",
     "CashManager", "Source", "FundingEvent",
     "Death", "Estate", "BequestReport",
-    "TaxEngine", "TaxYearResult", "SettlementEvent", "EstimateEvent",
+    "TaxEngine", "TaxLawChange", "TaxYearResult", "SettlementEvent", "EstimateEvent",
     "ORDINARY", "PREFERENTIAL", "SS", "EXEMPT",
     "DEFAULT_SAFE_HARBOR", "DEFAULT_SALT_CAP", "DEDUCTIBLE_INTEREST",
     "ESTIMATE_MONTHS", "ESTIMATE_JAN_QUARTER",

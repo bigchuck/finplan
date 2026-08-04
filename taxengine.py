@@ -206,6 +206,26 @@ class EstimateEvent:
     amount: Decimal
 
 
+@dataclass
+class TaxLawChange:
+    """A dated tax-law change, applied at the January of the targeted tax
+    year — ahead of that year's December accrual, the same lead time
+    Estate.set_filing_status uses. Each field is independently optional so a
+    scenario can move one lever (say, the standard deduction) without
+    restating the whole schedule. No sunset: once applied, a change stands
+    until a later TaxLawChange supersedes the same field.
+    """
+    year: int
+    brackets: list | None = None
+    ltcg_brackets: list | None = None
+    std_deduction: object = None
+    ss_inclusion: object = None
+    safe_harbor_multiple: object = None
+    salt_cap: object = None
+    other_itemized: object = None
+    fired: bool = False
+
+
 class TaxEngine:
     def __init__(self, cash_account="Assets:Checking", brackets=None,
                  ltcg_brackets=None, std_deduction=DEFAULT_STD,
@@ -214,7 +234,8 @@ class TaxEngine:
                  estimates=False,
                  safe_harbor_multiple=DEFAULT_SAFE_HARBOR,
                  credit_withholding=True, prior_year_tax=0,
-                 prior_year_withholding=0, state=None, deductions=None):
+                 prior_year_withholding=0, state=None, deductions=None,
+                 law_changes=None):
         self.cash_account = cash_account
         self.brackets = [(money(c), Decimal(str(r)))
                          for c, r in (brackets or DEFAULT_BRACKETS)]
@@ -268,6 +289,12 @@ class TaxEngine:
         self.results: dict[int, TaxYearResult] = {}
         self.events: list[SettlementEvent] = []
         self.estimate_events: list[EstimateEvent] = []
+        # Sorted so a scan always meets already-fired entries first; not
+        # required for correctness (each entry checks its own year) but
+        # keeps the list in the order a report reads naturally.
+        self.law_changes: list[TaxLawChange] = sorted(
+            (law_changes or []), key=lambda c: c.year)
+        self.law_change_log: list[str] = []
 
     def character_of(self, account: str, state: bool = False) -> str:
         """Exact match first, then ordered prefix fallback, else ORDINARY —
@@ -400,6 +427,8 @@ class TaxEngine:
             year=tax_year, quarter=quarter, date=period.date, amount=amount))
 
     def settle(self, period, engine: Engine) -> None:
+        if period.month == 1:
+            self._apply_law_changes(period)
         if period.month == 12:
             self._accrue(period, engine)
             if self.state is not None:
@@ -408,6 +437,36 @@ class TaxEngine:
             self._settle_prior(period, engine)
             if self.state is not None:
                 self._settle_state_prior(period, engine)
+
+    def _apply_law_changes(self, period) -> None:
+        """Tax-year-boundary check: any not-yet-fired change whose year has
+        arrived is applied now, in January, well ahead of the December
+        accrual it must be in force for — the same lead time
+        Estate._change_filing_status relies on."""
+        for chg in self.law_changes:
+            if not chg.fired and period.year >= chg.year:
+                self._apply_law_change(chg, period)
+
+    def _apply_law_change(self, chg: TaxLawChange, period) -> None:
+        chg.fired = True
+        if chg.brackets is not None:
+            self.brackets = [(money(c), Decimal(str(r)))
+                             for c, r in chg.brackets]
+        if chg.ltcg_brackets is not None:
+            self.ltcg_brackets = [(money(c), Decimal(str(r)))
+                                  for c, r in chg.ltcg_brackets]
+        if chg.std_deduction is not None:
+            self.std_deduction = money(chg.std_deduction)
+        if chg.ss_inclusion is not None:
+            self.ss_inclusion = Decimal(str(chg.ss_inclusion))
+        if chg.safe_harbor_multiple is not None:
+            self.safe_harbor_multiple = Decimal(str(chg.safe_harbor_multiple))
+        if chg.salt_cap is not None:
+            self.salt_cap = money(chg.salt_cap)
+        if chg.other_itemized is not None:
+            self.other_itemized = money(chg.other_itemized)
+        self.law_change_log.append(
+            f"{period.date}  TY{chg.year} tax law change applied")
 
     def _gather(self, engine: Engine, state: bool = False):
         ordinary = ss = preferential = ZERO
