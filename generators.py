@@ -61,15 +61,18 @@ class Stream(Generator):
     def emit(self, period, engine: Engine) -> list[Transaction]:
         if self.amount == ZERO or not self._active(period):
             return []
+        # Declared amount is "today's dollars"; period.inflation is 1 under
+        # mode "nominal" so this is a no-op there. See inflation.py.
+        amt = money(self.amount * period.inflation)
         owner = self.attrs.get("owner")
         return [
             Transaction(
                 date=period.date,
                 description=f"{self.name} income",
                 postings=[
-                    Posting(self.to, self.amount, owner=owner,
+                    Posting(self.to, amt, owner=owner,
                             meta={"kind": "stream", "stream": self.name}),
-                    Posting(self.income_account, -self.amount, owner=owner,
+                    Posting(self.income_account, -amt, owner=owner,
                             meta={"kind": "stream", "stream": self.name}),
                 ],
             )
@@ -363,15 +366,18 @@ class Shock(Generator):
             return []
         if (period.year, period.month) != (self.when.year, self.when.month):
             return []
+        # Declared amount is "today's dollars"; period.inflation is 1 under
+        # mode "nominal" so this is a no-op there. See inflation.py.
+        amt = money(self.amount * period.inflation)
         owner = self.attrs.get("owner")
         return [
             Transaction(
                 date=period.date,
                 description=f"{self.name} (shock)",
                 postings=[
-                    Posting(self.to, self.amount, owner=owner,
+                    Posting(self.to, amt, owner=owner,
                             meta={"kind": "shock", "shock": self.name}),
-                    Posting(self.frm, -self.amount, owner=owner,
+                    Posting(self.frm, -amt, owner=owner,
                             meta={"kind": "shock", "shock": self.name}),
                 ],
             )
@@ -464,7 +470,12 @@ class Schedule(Generator):
 
     def _gross_due(self, period, engine: Engine) -> Decimal:
         if self.mode in ("fixed", "roth_conversion"):
-            return self.amount if period.month == self.month else ZERO
+            if period.month != self.month:
+                return ZERO
+            # Declared amount is "today's dollars"; period.inflation is 1
+            # under mode "nominal". rmd mode below is balance-driven and
+            # already nominal, so it never multiplies by period.inflation.
+            return money(self.amount * period.inflation)
 
         if period.month != self.month:
             return ZERO

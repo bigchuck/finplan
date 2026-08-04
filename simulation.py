@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from .accounts import BrokerageAccount, check_unrealized
 from .engine import Engine
+from .inflation import Inflation
 from .primitives import Posting, Transaction, ZERO
 from .simobject import SimObject
 
@@ -18,31 +20,49 @@ class Period:
     date: date
     year: int
     month: int
+    # Cumulative CPI factor from the simulation's start date; 1 for every
+    # period when Inflation.mode is "nominal" (the default). Consulted only
+    # by the three declared-dollar-amount sites in generators.py (Stream,
+    # Schedule fixed/roth_conversion, Shock) -- see inflation.py.
+    inflation: Decimal = Decimal(1)
 
     @property
     def is_year_end(self) -> bool:
         return self.month == 12
 
 
-def _months(start: date, n_years: int):
+def _months(start: date, n_years: int, inflation: Inflation | None = None):
+    # Undiscounted (factor 1.0 = "today's dollars") at the very first
+    # period, then compounds monthly at the in-force annual rate / 12 --
+    # the same monthly-slice convention apply_growth uses in accounts.py.
+    # Coverage back to start.year is guaranteed by Inflation.check_covers
+    # at build time under mode "real"; mode "nominal" never calls
+    # rate_for, so annual_rate stays ZERO and factor stays 1 throughout.
+    factor = Decimal(1)
+    real = inflation is not None and inflation.mode == "real"
     for y in range(start.year, start.year + n_years):
+        annual_rate = inflation.rate_for(y) if real else ZERO
+        monthly_rate = annual_rate / Decimal(12)
         for m in range(1, 13):
-            yield Period(date=date(y, m, 1), year=y, month=m)
+            yield Period(date=date(y, m, 1), year=y, month=m,
+                        inflation=factor)
+            factor = factor * (1 + monthly_rate)
 
 
 class Simulation:
     def __init__(self, engine: Engine, objects: list[SimObject],
                  start: date, cash_manager=None, tax_engine=None,
-                 estate=None):
+                 estate=None, inflation: Inflation | None = None):
         self.engine = engine
         self.objects = objects
         self.start = start
         self.cash_manager = cash_manager
         self.tax_engine = tax_engine
         self.estate = estate
+        self.inflation = inflation
 
     def run(self, n_years: int) -> Engine:
-        for period in _months(self.start, n_years):
+        for period in _months(self.start, n_years, self.inflation):
             if self._transition(period):
                 break
             self._accrue(period)

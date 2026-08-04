@@ -19,6 +19,7 @@ from .generators import (
     DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
     Schedule, Shock, Stream,
 )
+from .inflation import build_inflation
 from .legacy import Death, Estate
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import resolve
@@ -323,10 +324,18 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
         # and to the TaxEngine whose schedule it swaps.
         estate = _build_estate(control["legacy"], objects, tax_engine)
 
+    start = _parse_date(control["start"])
+    # Opt-in the same way estimates/state are: absent "inflation" means
+    # mode "nominal", so every pre-S13 control file keeps its exact cash
+    # path. check_covers is a no-op under "nominal", regardless of whether
+    # a "rates" block is present.
+    inflation = build_inflation(control.get("inflation"))
+    inflation.check_covers(start.year)
+
     sim = Simulation(engine=engine, objects=objects,
-                     start=_parse_date(control["start"]),
+                     start=start,
                      cash_manager=cash_manager, tax_engine=tax_engine,
-                     estate=estate)
+                     estate=estate, inflation=inflation)
     return engine, sim, int(control.get("years", 1))
 
 
