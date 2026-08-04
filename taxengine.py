@@ -642,4 +642,6 @@ class TaxEngine:
                 f"prepaid {e.prepaid:,.2f} (withheld {e.withheld:,.2f} "
                 f"+ estimated {e.estimated:,.2f}), "
                 f"{verb} {abs(e.paid):,.2f}")
+        for msg in self.law_change_log:
+            lines.append(f"  {msg}")
         return "\n".join(lines)
