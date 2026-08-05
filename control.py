@@ -17,7 +17,7 @@ from .taxengine import (
 from .engine import Engine
 from .generators import (
     DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
-    Schedule, Shock, Stream,
+    RecurringExpense, Schedule, Shock, Stream,
 )
 from .inflation import build_inflation
 from .legacy import Death, Estate
@@ -39,6 +39,7 @@ _ACCOUNT_TYPES = {
 
 _STREAM_KEYS = ("name", "to", "income", "amount", "start", "end")
 _SHOCK_KEYS = ("name", "from", "to", "amount", "when")
+_RECURRING_KEYS = ("name", "from", "to", "amount", "start", "end", "interval")
 _SCHEDULE_KEYS = ("name", "source", "to", "mode", "amount", "month",
                   "owner_birth_year", "rmd_start_age", "divisors",
                   "start", "end")
@@ -169,6 +170,20 @@ def _build_shock(spec: dict) -> Shock:
     )
 
 
+def _build_recurring_expense(spec: dict) -> RecurringExpense:
+    attrs = {k: v for k, v in spec.items() if k not in _RECURRING_KEYS}
+    return RecurringExpense(
+        name=spec["name"],
+        frm=spec["from"],
+        to=spec["to"],
+        amount=spec["amount"],
+        start=_parse_date(spec["start"]),
+        end=_parse_date(spec["end"]) if spec.get("end") else None,
+        interval=spec.get("interval", 1),
+        attrs=attrs,
+    )
+
+
 def _build_schedule(spec: dict, registry: dict) -> Schedule:
     name = spec["source"]
     if name not in registry:
@@ -294,6 +309,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
     for spec in control.get("shocks", []):
         objects.append(_build_shock(spec))
+
+    for spec in control.get("recurring_expenses", []):
+        objects.append(_build_recurring_expense(spec))
 
     for spec in control.get("schedules", []):
         objects.append(_build_schedule(spec, registry))

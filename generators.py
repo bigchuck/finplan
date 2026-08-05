@@ -384,6 +384,70 @@ class Shock(Generator):
         ]
 
 
+class RecurringExpense(Generator):
+    """A dated transfer that repeats every ``interval`` months, anchored at
+    ``start`` -- the general case of Shock's one-off transfer. interval=1
+    covers a monthly bill (mortgage, groceries); interval=6 covers a
+    semi-annual premium. Firing months are computed from the absolute
+    month offset from ``start``, so the anchor need not be January -- a
+    policy starting in March that pays semi-annually fires March and
+    September, not January and July.
+
+    Same shape as Shock (plain transfer, no recognition -- an expense is
+    not income, so there is no tax character to assign) but gated on a
+    repeating schedule instead of a single date, using the same
+    month-granular end window Stream uses.
+    """
+
+    def __init__(self, name: str, frm: str, to: str, amount, start,
+                 end=None, interval: int = 1, attrs=None):
+        super().__init__(name, attrs)
+        self.frm = frm
+        self.to = to
+        self.amount = money(amount)
+        self.start = start
+        self.end = end
+        self.interval = int(interval)
+        if self.interval < 1:
+            raise ValueError(
+                f"RecurringExpense {name!r}: interval must be >= 1, got "
+                f"{self.interval}")
+
+    def _active(self, period) -> bool:
+        pm = (period.year, period.month)
+        if pm < (self.start.year, self.start.month):
+            return False
+        if self.end is not None and pm > (self.end.year, self.end.month):
+            return False
+        return True
+
+    def _due(self, period) -> bool:
+        months_since_start = ((period.year - self.start.year) * 12
+                              + (period.month - self.start.month))
+        return months_since_start % self.interval == 0
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        if (self.amount == ZERO or not self._active(period)
+                or not self._due(period)):
+            return []
+        # Declared amount is "today's dollars"; period.inflation is 1 under
+        # mode "nominal" so this is a no-op there. See inflation.py.
+        amt = money(self.amount * period.inflation)
+        owner = self.attrs.get("owner")
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} (recurring expense)",
+                postings=[
+                    Posting(self.to, amt, owner=owner,
+                            meta={"kind": "recurring", "recurring": self.name}),
+                    Posting(self.frm, -amt, owner=owner,
+                            meta={"kind": "recurring", "recurring": self.name}),
+                ],
+            )
+        ]
+
+
 DEFAULT_RMD_DIVISORS: dict[int, Decimal] = {
     72: Decimal("27.4"), 73: Decimal("26.5"), 74: Decimal("25.5"),
     75: Decimal("24.6"), 76: Decimal("23.7"), 77: Decimal("22.9"),

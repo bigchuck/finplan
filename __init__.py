@@ -12,7 +12,7 @@ from .accounts import (
 from .generators import (
     Generator, Policy, InterestPolicy, DividendPolicy,
     HELOCInterestPolicy, HELOCPayment, Schedule,
-    ScheduleEvent, schedule_report, Shock, Stream,
+    ScheduleEvent, schedule_report, Shock, Stream, RecurringExpense,
 )
 from .cashmanager import CashManager, Source, FundingEvent
 from .legacy import Death, Estate, BequestReport
@@ -38,7 +38,7 @@ __all__ = [
     "TaxDeferredGrowth", "UNREALIZED_DEFERRED",
     "Generator", "Policy", "InterestPolicy", "DividendPolicy",
     "HELOCInterestPolicy", "HELOCPayment", "Schedule",
-    "ScheduleEvent", "schedule_report", "Shock", "Stream",
+    "ScheduleEvent", "schedule_report", "Shock", "Stream", "RecurringExpense",
     "CashManager", "Source", "FundingEvent",
     "Death", "Estate", "BequestReport",
     "TaxEngine", "TaxLawChange", "TaxYearResult", "SettlementEvent", "EstimateEvent",
