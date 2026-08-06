@@ -43,7 +43,8 @@ def _months(start: date, n_years: int, inflation: Inflation | None = None):
     for y in range(start.year, start.year + n_years):
         annual_rate = inflation.rate_for(y) if real else ZERO
         monthly_rate = annual_rate / Decimal(12)
-        for m in range(1, 13):
+        first_month = start.month if y == start.year else 1
+        for m in range(first_month, 13):
             yield Period(date=date(y, m, 1), year=y, month=m,
                         inflation=factor)
             factor = factor * (1 + monthly_rate)
