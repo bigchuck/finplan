@@ -48,6 +48,7 @@ class ReportConfig:
     frequency: object = DEFAULT_FREQUENCY   # "monthly" | "yearly" | [(y, m), ...]
     include: list = field(default_factory=list)
     exclude: list = field(default_factory=list)
+    transactions: list = field(default_factory=list)
 
     def __post_init__(self):
         if self.mode not in _MODES:
@@ -82,6 +83,7 @@ def build_report_config(name: str, spec: dict) -> ReportConfig:
         frequency=freq,
         include=list(spec.get("include", [])),
         exclude=list(spec.get("exclude", [])),
+        transactions=list(spec.get("transactions", [])),
     )
 
 
@@ -106,6 +108,29 @@ def _print_snapshot(label: str, engine: Engine, cfg: ReportConfig) -> None:
     width = max((len(a) for a in balances), default=0)
     for account in sorted(balances):
         print(f"  {account:<{width}}  {balances[account]:>14,.2f}")
+
+
+def _print_transactions(label: str, engine: Engine, period,
+                        cfg: ReportConfig) -> None:
+    """Dump journal entries touching any declared prefix for this period.
+    Independent of 'timing': the close-sweep only ever touches Income:/
+    Expenses: accounts (see Simulation._close), so a declared prefix like
+    'Assets:Checking' is unaffected by before/after-sweep positioning --
+    there is exactly one meaningful point to print it, unlike balances.
+    """
+    seen = set()
+    entries = []
+    for prefix in cfg.transactions:
+        for txn in engine.transactions_for(prefix, period.year, period.month):
+            if id(txn) in seen:
+                continue
+            seen.add(id(txn))
+            entries.append(txn)
+    if not entries:
+        return
+    print(label)
+    for txn in entries:
+        print(f"  {txn}")
 
 
 def _due(period, cfg: ReportConfig) -> bool:
@@ -146,6 +171,10 @@ def run_detail(engine: Engine, sim: Simulation, years: int,
 
         due = _due(period, cfg)
         is_close = period.is_year_end
+
+        if due and cfg.transactions:
+            _print_transactions(f"[{cfg.name}] {period.date} (transactions):",
+                                engine, period, cfg)
 
         if due and is_close and cfg.timing in ("before_sweep", "both"):
             _print_snapshot(f"[{cfg.name}] {period.date} (pre-close):",

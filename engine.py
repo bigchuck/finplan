@@ -50,6 +50,26 @@ class Engine:
     def balances(self, prefix: str = "") -> dict[str, Decimal]:
         return {name: self._balances[name] for name in self.accounts(prefix)}
 
+    def transactions_for(self, prefix: str = "", year: int | None = None,
+                         month: int | None = None) -> list[Transaction]:
+        """Journal entries touching an account under ``prefix`` (same
+        prefix-match convention as accounts()/balances()), optionally
+        narrowed to a single year and/or month. The debug/detail-report
+        counterpart to balance(): not 'what does the account hold', but
+        'what moved through it and why' -- a plain filter over the journal,
+        no new bookkeeping.
+        """
+        out = []
+        for txn in self.journal:
+            if not any(p.account.startswith(prefix) for p in txn.postings):
+                continue
+            if year is not None and txn.date.year != year:
+                continue
+            if month is not None and txn.date.month != month:
+                continue
+            out.append(txn)
+        return out
+
     # --- invariant ----------------------------------------------------------
 
     def _assert_whole_ledger(self) -> None:
