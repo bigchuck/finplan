@@ -448,6 +448,112 @@ class RecurringExpense(Generator):
         ]
 
 
+class Contribution(Generator):
+    """A recurring annual transfer into a resolved destination Account,
+    firing every year in [start, end] whose month matches ``month`` -- the
+    same annual-window shape as Schedule's fixed/roth_conversion modes,
+    generalized from Shock's single ``when`` date to a yearly recurrence.
+
+    Unlike Shock, ``to`` is a resolved Account object rather than a plain
+    string: if it's a BrokerageAccount, the delivered amount is credited to
+    basis via settle_effects, mirroring DividendPolicy's reinvestment
+    credit. New principal moving into a brokerage account is not embedded
+    gain; skipping the credit would inflate unrealized gains and trip
+    check_unrealized at the next year-end close.
+
+    Sizing modes:
+      fixed    : self.amount, inflation-scaled (a declared "today's
+                dollars" figure, same convention as Shock/Stream).
+      fraction : money(balance * self.fraction), balance read live from
+                engine.balance(self.frm) at emit time -- NOT inflation-
+                scaled, same as Schedule's rmd mode (balance-driven,
+                already nominal).
+      excess   : money(balance - self.threshold) when balance exceeds it,
+                else zero -- same floor arithmetic as AssetAccount.capacity.
+                threshold is NEVER inflation-scaled, by design: a floor
+                stated in nominal dollars, not indexed.
+    """
+
+    _MODES = ("fixed", "fraction", "excess")
+
+    def __init__(self, name: str, frm: str, to, mode: str,
+                 amount=None, fraction=None, threshold=None,
+                 month: int = 12, start=None, end=None, attrs=None):
+        super().__init__(name, attrs)
+        self.frm = frm
+        self.to = to
+        self.mode = mode
+        self.amount = money(amount) if amount is not None else None
+        self.fraction = rate(fraction) if fraction is not None else None
+        self.threshold = money(threshold) if threshold is not None else None
+        self.month = int(month)
+        self.start = start
+        self.end = end
+        # Basis delta held back out of the collection loop; see
+        # settle_effects (mirrors DividendPolicy._pending_basis).
+        self._pending_basis = ZERO
+
+        if self.mode not in self._MODES:
+            raise ValueError(f"Contribution {name!r}: unknown mode {mode!r}")
+        if self.mode == "fixed" and self.amount is None:
+            raise ValueError(
+                f"Contribution {name!r}: mode 'fixed' requires 'amount'")
+        if self.mode == "fraction" and self.fraction is None:
+            raise ValueError(
+                f"Contribution {name!r}: mode 'fraction' requires 'fraction'")
+        if self.mode == "excess" and self.threshold is None:
+            raise ValueError(
+                f"Contribution {name!r}: mode 'excess' requires 'threshold'")
+
+    def _active(self, period) -> bool:
+        pm = (period.year, period.month)
+        if self.start is not None and pm < (self.start.year, self.start.month):
+            return False
+        if self.end is not None and pm > (self.end.year, self.end.month):
+            return False
+        return True
+
+    def _amount_due(self, period, engine: Engine) -> Decimal:
+        if self.mode == "fixed":
+            # Declared amount is "today's dollars"; period.inflation is 1
+            # under mode "nominal" so this is a no-op there. See inflation.py.
+            return money(self.amount * period.inflation)
+        balance = engine.balance(self.frm)
+        if self.mode == "fraction":
+            return money(balance * self.fraction)
+        # excess
+        return money(balance - self.threshold) if balance > self.threshold else ZERO
+
+    def emit(self, period, engine: Engine) -> list[Transaction]:
+        self._pending_basis = ZERO   # never leave a stale delta from a prior tick
+        if not self._active(period) or period.month != self.month:
+            return []
+        amt = self._amount_due(period, engine)
+        if amt <= ZERO:
+            return []
+
+        owner = self.attrs.get("owner")
+        meta = {"kind": "contribution", "contribution": self.name}
+        if isinstance(self.to, BrokerageAccount):
+            self._pending_basis = amt
+
+        return [
+            Transaction(
+                date=period.date,
+                description=f"{self.name} (contribution)",
+                postings=[
+                    Posting(self.to.name, amt, owner=owner, meta=dict(meta)),
+                    Posting(self.frm, -amt, owner=owner, meta=dict(meta)),
+                ],
+            )
+        ]
+
+    def settle_effects(self, period, engine: Engine) -> None:
+        if self._pending_basis != ZERO:
+            self.to.credit_basis(self._pending_basis)
+            self._pending_basis = ZERO
+
+
 DEFAULT_RMD_DIVISORS: dict[int, Decimal] = {
     72: Decimal("27.4"), 73: Decimal("26.5"), 74: Decimal("25.5"),
     75: Decimal("24.6"), 76: Decimal("23.7"), 77: Decimal("22.9"),

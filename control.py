@@ -16,8 +16,8 @@ from .taxengine import (
 )
 from .engine import Engine
 from .generators import (
-    DividendPolicy, HELOCInterestPolicy, HELOCPayment, InterestPolicy,
-    RecurringExpense, Schedule, Shock, Stream,
+    Contribution, DividendPolicy, HELOCInterestPolicy, HELOCPayment,
+    InterestPolicy, RecurringExpense, Schedule, Shock, Stream,
 )
 from .inflation import build_inflation
 from .legacy import Death, Estate
@@ -43,6 +43,8 @@ _RECURRING_KEYS = ("name", "from", "to", "amount", "start", "end", "interval")
 _SCHEDULE_KEYS = ("name", "source", "to", "mode", "amount", "month",
                   "owner_birth_year", "rmd_start_age", "divisors",
                   "start", "end")
+_CONTRIBUTION_KEYS = ("name", "from", "to", "mode", "amount", "fraction",
+                      "threshold", "month", "start", "end")
 
 
 def _parse_date(s: str) -> date:
@@ -205,6 +207,27 @@ def _build_schedule(spec: dict, registry: dict) -> Schedule:
     )
 
 
+def _build_contribution(spec: dict, registry: dict) -> Contribution:
+    name = spec["to"]
+    if name not in registry:
+        raise KeyError(f"contribution destination {name!r} is not a "
+                       f"declared account")
+    attrs = {k: v for k, v in spec.items() if k not in _CONTRIBUTION_KEYS}
+    return Contribution(
+        name=spec["name"],
+        frm=spec["from"],
+        to=registry[name],
+        mode=spec["mode"],
+        amount=spec.get("amount"),
+        fraction=spec.get("fraction"),
+        threshold=spec.get("threshold"),
+        month=spec.get("month", 12),
+        start=_parse_date(spec["start"]) if spec.get("start") else None,
+        end=_parse_date(spec["end"]) if spec.get("end") else None,
+        attrs=attrs,
+    )
+
+
 def _build_law_change(spec: dict) -> TaxLawChange:
     return TaxLawChange(
         year=int(spec["year"]),
@@ -315,6 +338,9 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
     for spec in control.get("schedules", []):
         objects.append(_build_schedule(spec, registry))
+
+    for spec in control.get("contributions", []):
+        objects.append(_build_contribution(spec, registry))
 
     if opening_legs:
         legs = opening_legs + gain_legs
