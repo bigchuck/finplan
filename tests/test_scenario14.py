@@ -126,7 +126,7 @@ def test_cashmanager_no_shortfall_reports_floor_held():
     control = _shock_control(savings_opening="100000.00")
     control["shocks"][0]["amount"] = "0.00"   # no drain -> floor never breached
     engine, sim = run(control)
-    assert sim.cash_manager.report() == (
+    assert sim.cash_managers[0].report() == (
         "No forced withdrawals: the cash floor held every month.")
 
 
@@ -136,7 +136,7 @@ def test_cashmanager_soft_reserve_breach_recovers_to_target():
     # need_net = target(3,000) - (-1,000) = 4,000; Savings has ample
     # capacity and no withholding, so gross == net == 4,000.
     assert engine.balance("Assets:Checking") == money("3000.00")
-    report = sim.cash_manager.report()
+    report = sim.cash_managers[0].report()
     assert "[soft] reserve-breach" in report
     assert "cash -1,000.00 -> 3,000.00" in report
     assert "from Assets:Savings: gross 4,000.00, net 4,000.00" in report
@@ -160,7 +160,7 @@ def test_cashmanager_hard_insolvent_when_waterfall_runs_dry():
     # March relief brings it to -500 + 2,000 = 1,500 (above floor, no
     # further events for the rest of the year).
     assert engine.balance("Assets:Checking") == money("1500.00")
-    report = sim.cash_manager.report()
+    report = sim.cash_managers[0].report()
     assert "[HARD] reserve-exhausted" in report
     assert "cash -1,000.00 -> -500.00" in report
     assert "from Assets:Savings: gross 500.00, net 500.00" in report
@@ -174,7 +174,7 @@ def test_cashmanager_report_shows_gross_up_on_withholding_source():
     # withheld = 1,000, net delivered = 4,000 -- exactly covers the target.
     assert engine.balance("Assets:Checking") == money("3000.00")
     assert engine.balance("Assets:PrepaidTax:TY2026") == money("1000.00")
-    report = sim.cash_manager.report()
+    report = sim.cash_managers[0].report()
     assert "[soft] reserve-breach" in report
     assert ("from Assets:IRA: gross 5,000.00, net 4,000.00, "
            "withheld 1,000.00, ordinary") in report

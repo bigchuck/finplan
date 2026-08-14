@@ -104,7 +104,7 @@ def test_draw_posts_no_recognition_and_no_income():
 
 def test_draw_delivers_gross_with_no_withholding():
     engine, sim = capitalizing()
-    wd = sim.cash_manager.events[0].pulls[0]
+    wd = sim.cash_managers[0].events[0].pulls[0]
     assert wd.gross == money("21000.00")
     assert wd.net == wd.gross
     assert wd.withheld == ZERO
@@ -114,7 +114,7 @@ def test_draw_delivers_gross_with_no_withholding():
 
 def test_waterfall_refills_to_target_from_the_line():
     engine, sim = capitalizing()
-    ev = sim.cash_manager.events
+    ev = sim.cash_managers[0].events
     assert [e.date.year for e in ev] == [2026, 2027]
     assert ev[0].cash_before == money("4000.00")
     assert ev[0].cash_after == money("25000.00")
@@ -203,7 +203,7 @@ def test_matured_line_is_no_longer_an_eligible_source():
                       expense_once=True)
     # The balloon drops cash below the floor, but the line has closed, so the
     # waterfall runs dry: a plan-failure signal, not a silent redraw.
-    hard = [e for e in sim.cash_manager.events if e.severity == HARD]
+    hard = [e for e in sim.cash_managers[0].events if e.severity == HARD]
     assert hard, "expected a hard reserve-exhausted month after the balloon"
     assert hard[0].pulls == []
     assert engine.balance("Assets:Checking") == money("3557.30")
@@ -215,7 +215,7 @@ def test_unopened_line_cannot_be_drawn():
                       expense_once=True)
     # Every 2026 month breaches the floor with nothing to draw on; the first
     # pull is not until the line opens in January 2027.
-    ev = sim.cash_manager.events
+    ev = sim.cash_managers[0].events
     assert all(e.pulls == [] and e.severity == HARD
                for e in ev if e.date.year == 2026)
     first_pull = next(e for e in ev if e.pulls)
@@ -231,7 +231,7 @@ def test_capacity_is_limit_minus_owed_not_balance_to_zero():
                       opening="60000.00", expense="55000.00",
                       expense_once=True)
     # Wanted 20,000.00, limit allows 12,000.00: partial fill.
-    ev = sim.cash_manager.events[0]
+    ev = sim.cash_managers[0].events[0]
     assert ev.pulls[0].gross == money("12000.00")
     # 5,000.00 + 12,000.00 = 17,000.00 clears the 10,000.00 FLOOR but misses
     # the 25,000.00 target. Severity keys off the floor, so this is soft; the
@@ -251,7 +251,7 @@ def test_a_source_floor_reserves_borrowing_headroom():
     engine, sim, years = build(control)
     sim.run(years)
     # 100,000.00 limit less an 85,000.00 reserve = 15,000.00 drawable.
-    assert sim.cash_manager.events[0].pulls[0].gross == money("15000.00")
+    assert sim.cash_managers[0].events[0].pulls[0].gross == money("15000.00")
 
 
 # --- deductibility routing -------------------------------------------------

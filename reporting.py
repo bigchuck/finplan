@@ -211,9 +211,9 @@ def print_summary(scenario: str, engine: Engine, sim: Simulation,
     print(f"  {'(whole-ledger sum)':<{width}}  "
           f"{sum(engine.balances().values()):>14,.2f}")
 
-    if sim.cash_manager is not None:
+    for cash_manager in sim.cash_managers:
         print()
-        print(sim.cash_manager.report())
+        print(cash_manager.report())
     if sim.tax_engine is not None:
         print()
         print(sim.tax_engine.report())

@@ -52,12 +52,12 @@ def _months(start: date, n_years: int, inflation: Inflation | None = None):
 
 class Simulation:
     def __init__(self, engine: Engine, objects: list[SimObject],
-                 start: date, cash_manager=None, tax_engine=None,
+                 start: date, cash_managers=None, tax_engine=None,
                  estate=None, inflation: Inflation | None = None):
         self.engine = engine
         self.objects = objects
         self.start = start
-        self.cash_manager = cash_manager
+        self.cash_managers = cash_managers or []
         self.tax_engine = tax_engine
         self.estate = estate
         self.inflation = inflation
@@ -105,8 +105,12 @@ class Simulation:
         # these two leaves every estimate unfunded until the next tick.
         if self.tax_engine is not None:
             self.tax_engine.pay_estimates(period, self.engine)
-        if self.cash_manager is not None:
-            self.cash_manager.cover_shortfall(period, self.engine)
+        # List order is control-file block order, and it's meaningful: one
+        # manager's forced withdrawal can push another's cash account below
+        # its own floor within this same tick, and that manager reacts here
+        # too rather than waiting a period.
+        for cash_manager in self.cash_managers:
+            cash_manager.cover_shortfall(period, self.engine)
 
     def _assess(self, period: Period) -> None:
         if self.tax_engine is not None:

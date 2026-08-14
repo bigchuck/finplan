@@ -115,7 +115,7 @@ BREACH = {
 
 def test_shock_breaches_floor_midrun_and_cashmanager_refills():
     engine, sim = _run(BREACH)
-    ev = sim.cash_manager.events
+    ev = sim.cash_managers[0].events
     # No breach until June: the shock drains 30000 -> 5000, then funding fires
     # exactly once, in June, and refills to target from the brokerage.
     assert len(ev) == 1

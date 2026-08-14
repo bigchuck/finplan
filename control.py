@@ -76,8 +76,7 @@ def _build_dividend_policy(account: BrokerageAccount, control: dict) -> Dividend
     """
     attrs = account.attrs
     reinvest = attrs.get("reinvest", True)
-    to = attrs.get("dividend_to") or control.get(
-        "cash_management", {}).get("account")
+    to = attrs.get("dividend_to") or _default_cash_account(control)
     if not reinvest and not to:
         raise ValueError(
             f"account {account.name!r}: reinvest=false needs a 'dividend_to' "
@@ -103,8 +102,7 @@ def _build_heloc(account: HELOCAccount, control: dict) -> list:
         if isinstance(account.attrs.get(key), str):
             account.attrs[key] = _parse_date(account.attrs[key])
 
-    cash = account.attrs.get("payment_from") or control.get(
-        "cash_management", {}).get("account")
+    cash = account.attrs.get("payment_from") or _default_cash_account(control)
     fee = money(account.attrs.get("origination_fee", 0))
     pay_spec = account.attrs.get("payment") or {}
     mode = pay_spec.get("mode", "none")
@@ -158,6 +156,66 @@ def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
         waterfall=waterfall,
         trigger=spec.get("trigger", "cash-floor"),
     )
+
+
+def _cash_management_specs(control: dict) -> list:
+    """``cash_management`` accepts either one block (a bare dict, wrapped
+    here into a one-item list) or several — e.g. a separate managed cash
+    account per owner.
+    """
+    cm = control.get("cash_management")
+    if cm is None:
+        return []
+    return [cm] if isinstance(cm, dict) else cm
+
+
+def _default_cash_account(control: dict):
+    """The implicit dividend/HELOC/tax cash target, but only when there is
+    exactly one cash_management block — with several, which one is "the"
+    default is ambiguous, so callers must say so explicitly rather than have
+    one silently picked for them.
+    """
+    specs = _cash_management_specs(control)
+    return specs[0]["account"] if len(specs) == 1 else None
+
+
+def _check_waterfall_cycles(specs: list) -> None:
+    """A waterfall source that is itself another block's managed account can
+    form a refill cycle (A drains B, B drains A) that would ping-pong forced
+    withdrawals every period instead of converging — catch it at build time.
+    """
+    edges = {}
+    for spec in specs:
+        edges.setdefault(spec["account"], []).extend(
+            rung["source"] for rung in spec.get("waterfall", []))
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {}
+    path = []
+
+    def visit(node: str) -> None:
+        state = color.get(node, WHITE)
+        if state == BLACK:
+            return
+        if state == GRAY:
+            cycle = path[path.index(node):] + [node]
+            raise ValueError(
+                "cash_management waterfall creates a cycle: "
+                + " -> ".join(cycle))
+        color[node] = GRAY
+        path.append(node)
+        for nxt in edges.get(node, []):
+            visit(nxt)
+        path.pop()
+        color[node] = BLACK
+
+    for node in list(edges):
+        visit(node)
+
+
+def _build_cash_managers(specs: list, registry: dict) -> list:
+    _check_waterfall_cycles(specs)
+    return [_build_cash_manager(spec, registry) for spec in specs]
 
 
 def _build_shock(spec: dict) -> Shock:
@@ -242,8 +300,8 @@ def _build_law_change(spec: dict) -> TaxLawChange:
 
 
 def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
-    cash = spec.get("cash_account") or control.get(
-        "cash_management", {}).get("account", "Assets:Checking")
+    cash = (spec.get("cash_account") or _default_cash_account(control)
+            or "Assets:Checking")
     est = spec.get("estimates") or {}
     return TaxEngine(
         cash_account=cash,
@@ -354,9 +412,7 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
             )
         )
 
-    cash_manager = None
-    if "cash_management" in control:
-        cash_manager = _build_cash_manager(control["cash_management"], registry)
+    cash_managers = _build_cash_managers(_cash_management_specs(control), registry)
 
     tax_engine = None
     if "tax" in control:
@@ -378,7 +434,7 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
     sim = Simulation(engine=engine, objects=objects,
                      start=start,
-                     cash_manager=cash_manager, tax_engine=tax_engine,
+                     cash_managers=cash_managers, tax_engine=tax_engine,
                      estate=estate, inflation=inflation)
     return engine, sim, int(control.get("years", 1))
 

@@ -146,7 +146,7 @@ INSOLVENT = {
 
 def test_reserve_exhausted_is_hard():
     engine, sim = _run(INSOLVENT)
-    ev = sim.cash_manager.events
+    ev = sim.cash_managers[0].events
     assert len(ev) == 12
     assert all(e.severity == HARD for e in ev)
     assert ev[0].cash_before == money("1000.00")
@@ -179,8 +179,8 @@ COMFORTABLE = {
 
 def test_no_breach_no_forced_withdrawals():
     engine, sim = _run(COMFORTABLE)
-    assert sim.cash_manager.events == []
-    assert "No forced withdrawals" in sim.cash_manager.report()
+    assert sim.cash_managers[0].events == []
+    assert "No forced withdrawals" in sim.cash_managers[0].report()
     assert engine.balance("Assets:Checking") == money("50000.00")
     assert engine.balance("Assets:Roth") == money("10000.00")
 
@@ -208,7 +208,7 @@ def test_waterfall_drains_in_order_roth_last():
     assert engine.balance("Assets:Brokerage") == ZERO
     assert engine.balance("Assets:Roth") == money("95000.00")
     assert engine.balance("Assets:Checking") == money("20000.00")
-    assert sim.cash_manager.events[0].severity == SOFT
+    assert sim.cash_managers[0].events[0].severity == SOFT
 
 
 def test_forced_withdrawals_are_tagged():
