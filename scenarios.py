@@ -19,12 +19,16 @@ changes.
 
 Merge rules (child onto parent):
   * dict + dict              -> merged key-by-key, recursively; new keys added.
-  * list-of-named-dicts      -> merged BY "name": a child entry with a matching
-                                name overrides that entry field-by-field; a new
-                                name is appended; {"name": X, "_remove": true}
-                                drops an inherited entry. (This is what lets you
-                                retune one account's apr without restating the
-                                whole list.)
+  * list-of-identified-dicts -> merged BY identity key: a child entry with a
+                                matching identity overrides that entry
+                                field-by-field; a new identity is appended;
+                                {<id-key>: X, "_remove": true} drops an
+                                inherited entry. (This is what lets you retune
+                                one account's apr without restating the whole
+                                list.) The identity key is "name" for every
+                                list except `cash_management`, whose blocks
+                                have no "name" and are identified by
+                                "account" instead.
   * anything else (scalars)  -> child replaces parent.
 
 This module is pure data transformation — it knows nothing about the ledger.
@@ -40,14 +44,30 @@ class ScenarioError(ValueError):
     """Missing scenario, missing parent, or a cyclic extends chain."""
 
 
+# Identity key used to match list entries across a merge, tried in order.
+# "name" covers accounts/streams/shocks/recurring_expenses/schedules/
+# contributions; "account" covers `cash_management` blocks, which have no
+# "name" field.
+_ID_KEYS = ("name", "account")
+
+
+def _identity_key(items) -> str | None:
+    """The single key present on every item of ``items``, tried in
+    ``_ID_KEYS`` order, or None if no such key exists (not an identified
+    list)."""
+    for key in _ID_KEYS:
+        if all(isinstance(i, dict) and key in i for i in items):
+            return key
+    return None
+
+
 def _is_named_list(x) -> bool:
-    return (isinstance(x, list) and len(x) > 0
-            and all(isinstance(i, dict) and "name" in i for i in x))
+    return isinstance(x, list) and len(x) > 0 and _identity_key(x) is not None
 
 
 def _fresh(value):
     """A child-supplied value with no parent to merge onto: strip _remove markers
-    from named lists so a directive never leaks in as literal data."""
+    from identified lists so a directive never leaks in as literal data."""
     if _is_named_list(value):
         return [dict(i) for i in value if not i.get(REMOVE)]
     return value
@@ -65,17 +85,18 @@ def deep_merge(base, override):
         return result
 
     if _is_named_list(base) and isinstance(override, list):
-        merged = {i["name"]: dict(i) for i in base}   # preserves base order
+        id_key = _identity_key(base)
+        merged = {i[id_key]: dict(i) for i in base}   # preserves base order
         for item in override:
-            name = item.get("name")
+            ident = item.get(id_key)
             if item.get(REMOVE) is True:
-                merged.pop(name, None)
+                merged.pop(ident, None)
                 continue
             patch = {k: v for k, v in item.items() if k != REMOVE}
-            if name in merged:
-                merged[name] = deep_merge(merged[name], patch)
+            if ident in merged:
+                merged[ident] = deep_merge(merged[ident], patch)
             else:
-                merged[name] = patch
+                merged[ident] = patch
         return list(merged.values())
 
     return override

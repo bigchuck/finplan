@@ -40,6 +40,27 @@ ROOT = {
             "extends": "two_acct",
             "accounts": [{"name": "Assets:Checking", "_remove": True}],
         },
+        "cash_mgmt": {
+            "extends": "two_acct",
+            "cash_management": [
+                {"account": "Assets:Checking", "floor": "1000.00",
+                 "target": "5000.00", "waterfall": []},
+                {"account": "Assets:Savings", "floor": "500.00",
+                 "target": "2000.00", "waterfall": []},
+            ],
+        },
+        "cash_mgmt_retuned": {
+            "extends": "cash_mgmt",
+            "cash_management": [
+                {"account": "Assets:Checking", "floor": "2000.00"},
+            ],
+        },
+        "cash_mgmt_dropped": {
+            "extends": "cash_mgmt",
+            "cash_management": [
+                {"account": "Assets:Savings", "_remove": True},
+            ],
+        },
     }
 }
 
@@ -82,6 +103,26 @@ def test_new_account_appended():
 def test_remove_drops_inherited_account():
     accts = {a["name"] for a in _s("drop_checking")["accounts"]}
     assert accts == {"Assets:Savings"}
+
+
+def test_cash_management_keyed_by_account():
+    blocks = {b["account"]: b for b in _s("cash_mgmt")["cash_management"]}
+    assert set(blocks) == {"Assets:Checking", "Assets:Savings"}
+    assert blocks["Assets:Checking"]["target"] == "5000.00"
+
+
+def test_cash_management_patch_preserves_siblings():
+    # Retuning one block's floor leaves target/waterfall inherited intact,
+    # and leaves the other block untouched.
+    blocks = {b["account"]: b for b in _s("cash_mgmt_retuned")["cash_management"]}
+    assert blocks["Assets:Checking"]["floor"] == "2000.00"
+    assert blocks["Assets:Checking"]["target"] == "5000.00"
+    assert blocks["Assets:Savings"]["floor"] == "500.00"
+
+
+def test_cash_management_remove_drops_block():
+    blocks = {b["account"] for b in _s("cash_mgmt_dropped")["cash_management"]}
+    assert blocks == {"Assets:Checking"}
 
 
 def test_unknown_scenario_raises():
