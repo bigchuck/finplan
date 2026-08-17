@@ -9,7 +9,7 @@ from .control import build_scenario
 from .reporting import (
     ReportConfigError, build_report_config, print_summary, run_detail,
 )
-from .scenarios import names
+from .scenarios import mixin_names, names
 
 
 def main(argv=None) -> int:
@@ -21,6 +21,11 @@ def main(argv=None) -> int:
                         help="report name to use, from this file's "
                              "top-level 'reports' block (omit if that "
                              "block is absent or has exactly one entry)")
+    parser.add_argument("--mixin", action="append", default=[],
+                        dest="mixins", metavar="NAME",
+                        help="mixin fragment, from this file's top-level "
+                             "'mixins' block, to layer onto the scenario; "
+                             "repeatable, applied in the order given")
     args = parser.parse_args(argv)
 
     with open(args.control) as fh:
@@ -31,6 +36,11 @@ def main(argv=None) -> int:
         for n in names(root):
             parent = root["scenarios"][n].get("extends")
             print(f"  {n}" + (f"  (extends {parent})" if parent else ""))
+        available_mixins = mixin_names(root)
+        if available_mixins:
+            print("Mixins in this file (layer onto a scenario with --mixin):")
+            for n in available_mixins:
+                print(f"  {n}")
         return 0
 
     # A file with no "reports" block behaves exactly as before: cfg stays
@@ -64,14 +74,15 @@ def main(argv=None) -> int:
         except ReportConfigError as e:
             parser.error(str(e))
 
-    engine, sim, years = build_scenario(root, args.scenario)
+    engine, sim, years = build_scenario(root, args.scenario, tuple(args.mixins))
 
     if cfg is not None and cfg.mode == "detail":
         run_detail(engine, sim, years, cfg)
     else:
         sim.run(years)
 
-    print_summary(args.scenario, engine, sim, years)
+    label = "+".join([args.scenario, *args.mixins])
+    print_summary(label, engine, sim, years)
     return 0
 
 

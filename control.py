@@ -22,7 +22,7 @@ from .generators import (
 from .inflation import build_inflation
 from .legacy import Death, Estate
 from .primitives import Posting, Transaction, ZERO, money
-from .scenarios import resolve
+from .scenarios import apply_mixins, resolve
 from .simobject import SimObject
 from .simulation import Simulation
 
@@ -439,10 +439,15 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
     return engine, sim, int(control.get("years", 1))
 
 
-def build_scenario(root: dict, name: str) -> tuple[Engine, Simulation, int]:
-    return build(resolve(root.get("scenarios", {}), name))
+def build_scenario(root: dict, name: str,
+                   mixins: tuple[str, ...] = ()) -> tuple[Engine, Simulation, int]:
+    scenario = resolve(root.get("scenarios", {}), name)
+    if mixins:
+        scenario = apply_mixins(scenario, root.get("mixins", {}), mixins)
+    return build(scenario)
 
 
-def load(path: str, scenario: str) -> tuple[Engine, Simulation, int]:
+def load(path: str, scenario: str,
+        mixins: tuple[str, ...] = ()) -> tuple[Engine, Simulation, int]:
     with open(path) as fh:
-        return build_scenario(json.load(fh), scenario)
+        return build_scenario(json.load(fh), scenario, mixins)

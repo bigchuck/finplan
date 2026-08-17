@@ -156,6 +156,43 @@ run `python tests/test_scenarios.py` to see it pass, or read it for more
 worked examples (multi-level `extends`, cycle detection, the `_remove`
 sentinel on both account and cash-management lists).
 
+### Mixins: ad hoc combinations without pre-declaring every scenario
+
+`extends` is for authoring a lineage of complete scenarios ahead of time.
+For picking a combination on the fly — "the base plan, but with moderate
+brokerage growth, plus cash sweeps" — without adding a new named scenario
+for every combination you might want to study, use a **mixin** instead. A
+mixin is a fragment under a separate top-level `"mixins"` map: it isn't a
+full scenario (no `start`/`years` required) and can't be run on its own.
+
+```json
+{
+  "scenarios": { "base": { "...": "..." } },
+  "mixins": {
+    "moderate_growth": {
+      "accounts": [{"name": "Assets:Brokerage", "apr": "0.06"}]
+    },
+    "cash_sweeps": {
+      "cash_management": [
+        {"account": "Assets:Checking", "floor": "1000.00",
+         "target": "5000.00", "waterfall": []}
+      ]
+    }
+  }
+}
+```
+
+Select mixins at run time with a repeatable `--mixin` flag, layered onto the
+resolved base scenario left to right (later mixin wins on a shared field),
+using the exact same merge rules as `extends`:
+
+```
+python -m finplan.cli all_scenarios.json base --mixin moderate_growth --mixin cash_sweeps
+```
+
+Running the file with no scenario name lists both scenarios and any
+declared mixins.
+
 ## Accounts
 
 Declared under `"accounts"`; each entry needs `type` and `name`, plus an
@@ -579,5 +616,5 @@ this primer gives. Run any of them directly: `python tests/test_scenarioN.py`.
 | Recurring expenses | `test_scenario15.py` |
 | The `reports` block / detail mode | `test_scenario16.py` |
 | Multiple `cash_management` blocks, waterfall cycle detection | `test_scenario17.py` |
-| Scenario inheritance: `extends`, override-by-name, `_remove` | `test_scenarios.py` |
+| Scenario inheritance: `extends`, override-by-name, `_remove`, mixins | `test_scenarios.py` |
 | Ledger primitives: transactions, balance invariants, money rounding | `test_primitives.py` |

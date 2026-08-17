@@ -31,6 +31,13 @@ Merge rules (child onto parent):
                                 "account" instead.
   * anything else (scalars)  -> child replaces parent.
 
+A separate top-level "mixins" map holds fragments meant to be layered onto a
+resolved scenario at call time (see `apply_mixins`), rather than authored
+into the scenarios graph via "extends". A mixin isn't a full scenario and
+can't be run on its own -- it's how you pick ad hoc combinations (e.g. a
+base scenario plus a "moderate_growth" mixin plus a "cash_sweeps" mixin) for
+one run without pre-declaring every combination as its own named scenario.
+
 This module is pure data transformation — it knows nothing about the ledger.
 """
 
@@ -125,3 +132,29 @@ def resolve(scenarios: dict, name: str, _seen: tuple = ()) -> dict:
 def names(root: dict) -> list[str]:
     """List the scenario names declared in a parsed all_scenarios root."""
     return sorted(root.get("scenarios", {}))
+
+
+def mixin_names(root: dict) -> list[str]:
+    """List the mixin names declared in a parsed all_scenarios root."""
+    return sorted(root.get("mixins", {}))
+
+
+def apply_mixins(scenario: dict, mixins: dict, selected: tuple[str, ...]) -> dict:
+    """Layer named mixin fragments onto an already-resolved ``scenario``.
+
+    ``mixins`` is the map under the file's top-level "mixins" key. A mixin
+    is a fragment, not a full scenario -- it has no "extends" of its own and
+    isn't required to stand alone (no "start"/"years"/etc). Selected mixins
+    are deep-merged on left-to-right, in the order given, so a later mixin
+    wins over an earlier one on any field both touch -- the same per-field
+    and per-identified-list merge rules as an extends chain, just chosen at
+    call time instead of authored into the scenario graph.
+    """
+    result = scenario
+    for name in selected:
+        if name not in mixins:
+            raise ScenarioError(
+                f"unknown mixin {name!r}; available: {sorted(mixins)}"
+            )
+        result = deep_merge(result, mixins[name])
+    return result

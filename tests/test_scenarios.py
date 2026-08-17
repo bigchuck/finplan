@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finplan.scenarios import resolve, deep_merge, names, ScenarioError
+from finplan.scenarios import (
+    apply_mixins, resolve, deep_merge, mixin_names, names, ScenarioError,
+)
 from finplan.control import build_scenario
 from finplan.primitives import money, ZERO
 
@@ -61,7 +63,21 @@ ROOT = {
                 {"account": "Assets:Savings", "_remove": True},
             ],
         },
-    }
+    },
+    "mixins": {
+        "moderate_growth": {
+            "accounts": [{"name": "Assets:Checking", "apr": "0.06"}],
+        },
+        "even_higher_growth": {
+            "accounts": [{"name": "Assets:Checking", "apr": "0.08"}],
+        },
+        "cash_sweeps": {
+            "cash_management": [
+                {"account": "Assets:Checking", "floor": "1000.00",
+                 "target": "5000.00", "waterfall": []},
+            ],
+        },
+    },
 }
 
 
@@ -146,6 +162,48 @@ def test_inputs_not_mutated():
     before = copy.deepcopy(ROOT)
     _s("long_high")
     assert ROOT == before, "resolve must not mutate its inputs"
+
+
+def test_mixin_names_listed():
+    assert mixin_names(ROOT) == ["cash_sweeps", "even_higher_growth",
+                                 "moderate_growth"]
+
+
+def test_mixin_patches_resolved_scenario():
+    scenario = apply_mixins(_s("base"), ROOT["mixins"], ("moderate_growth",))
+    acct = scenario["accounts"][0]
+    assert acct["apr"] == "0.06"
+    assert acct["opening"] == "100000.00"  # untouched sibling field
+
+
+def test_mixins_apply_left_to_right_later_wins():
+    forward = apply_mixins(_s("base"), ROOT["mixins"],
+                           ("moderate_growth", "even_higher_growth"))
+    backward = apply_mixins(_s("base"), ROOT["mixins"],
+                            ("even_higher_growth", "moderate_growth"))
+    assert forward["accounts"][0]["apr"] == "0.08"
+    assert backward["accounts"][0]["apr"] == "0.06"
+
+
+def test_mixin_appends_new_cash_management_block():
+    scenario = apply_mixins(_s("two_acct"), ROOT["mixins"], ("cash_sweeps",))
+    blocks = {b["account"] for b in scenario["cash_management"]}
+    assert blocks == {"Assets:Checking"}
+
+
+def test_unknown_mixin_raises():
+    try:
+        apply_mixins(_s("base"), ROOT["mixins"], ("nope",))
+    except ScenarioError:
+        return
+    raise AssertionError("expected ScenarioError for unknown mixin")
+
+
+def test_build_scenario_accepts_mixins():
+    engine, sim, years = build_scenario(ROOT, "base", ("moderate_growth",))
+    sim.run(years)
+    growth = engine.balance("Assets:Checking") - money("100000.00")
+    assert growth > money("5000")  # ~6%/yr compounded monthly on 100k
 
 
 def test_resolved_scenario_builds_and_balances():
