@@ -241,6 +241,29 @@ def test_report_name_given_but_no_reports_block_declared_exits_nonzero():
         "declares no 'reports' block")
 
 
+def test_no_scenario_lists_reports_alongside_scenarios():
+    path = _write("multi.json", {
+        "scenarios": {"base": BASIC},
+        "reports": {
+            "yearly": {"mode": "detail", "frequency": "yearly"},
+            "monthly": {"mode": "detail", "frequency": "monthly"},
+        },
+    })
+    rc, out = _capture(cli_main, [path])
+    assert rc == 0
+    assert "Scenarios in this file:" in out
+    assert "  base" in out
+    assert "Reports in this file (select one with --report):" in out
+    assert "  monthly" in out
+    assert "  yearly" in out
+
+
+def test_no_scenario_omits_reports_heading_when_none_declared():
+    path = _write("basic.json", {"scenarios": {"base": BASIC}})
+    _, out = _capture(cli_main, [path])
+    assert "Reports in this file" not in out
+
+
 def test_out_flag_writes_report_to_file_and_creates_parent_dirs():
     import tempfile
     path = _write("basic.json", {"scenarios": {"base": BASIC}})

@@ -58,11 +58,11 @@ the entire minimum viable control file (`tests/test_scenario1.py`).
 Two things to know about the CLI's behavior, since they're easy to trip
 over:
 - **Omitting the scenario name doesn't run anything** — it just lists the
-  scenarios in the file and exits. If you meant to run one, you forgot the
-  second argument.
-- **The `report` argument only matters if the file has a top-level
-  `"reports"` block** (see [Reports](#reports--output)). No `reports` block,
-  or exactly one entry in it, and you never need to pass a report name.
+  scenarios, mixins, and reports declared in the file and exits. If you
+  meant to run one, you forgot the second argument.
+- **`--report` only matters if the file has a top-level `"reports"` block**
+  (see [Reports](#reports--output)). No `reports` block, or exactly one
+  entry in it, and you never need to pass `--report`.
 
 ## The mental model
 

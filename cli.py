@@ -49,6 +49,11 @@ def main(argv=None) -> int:
                 print("Mixins in this file (layer onto a scenario with --mixin):")
                 for n in available_mixins:
                     print(f"  {n}")
+            report_map = root.get("reports", {})
+            if report_map:
+                print("Reports in this file (select one with --report):")
+                for n in sorted(report_map):
+                    print(f"  {n}")
             return 0
 
         # A file with no "reports" block behaves exactly as before: cfg
