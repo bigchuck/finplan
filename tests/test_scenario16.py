@@ -211,7 +211,7 @@ def test_two_reports_entries_with_explicit_name_runs_that_one():
             "monthly": {"mode": "detail", "frequency": "monthly"},
         },
     })
-    _, out = _capture(cli_main, [path, "base", "monthly"])
+    _, out = _capture(cli_main, [path, "base", "--report", "monthly"])
     assert "[monthly] 2026-01-01:" in out
     assert "[yearly]" not in out
 
@@ -222,7 +222,7 @@ def test_unknown_report_name_exits_nonzero():
         "reports": {"yearly": {"mode": "detail", "frequency": "yearly"}},
     })
     try:
-        cli_main([path, "base", "bogus"])
+        cli_main([path, "base", "--report", "bogus"])
     except SystemExit as e:
         assert e.code != 0
         return
@@ -232,13 +232,28 @@ def test_unknown_report_name_exits_nonzero():
 def test_report_name_given_but_no_reports_block_declared_exits_nonzero():
     path = _write("basic.json", {"scenarios": {"base": BASIC}})
     try:
-        cli_main([path, "base", "whatever"])
+        cli_main([path, "base", "--report", "whatever"])
     except SystemExit as e:
         assert e.code != 0
         return
     raise AssertionError(
         "expected SystemExit when a report name is given but the file "
         "declares no 'reports' block")
+
+
+def test_out_flag_writes_report_to_file_and_creates_parent_dirs():
+    import tempfile
+    path = _write("basic.json", {"scenarios": {"base": BASIC}})
+    out_dir = Path(tempfile.mkdtemp(prefix="finplan_test_scenario16_out_"))
+    out_path = out_dir / "nested" / "run.txt"
+
+    rc, console_out = _capture(cli_main, [path, "base", "--out", str(out_path)])
+
+    assert rc == 0
+    assert f"wrote output to {out_path}" in console_out
+    assert "final ledger" not in console_out   # went to the file, not stdout
+    written = out_path.read_text(encoding="utf-8")
+    assert "Scenario 'base' — final ledger after 1 year(s):" in written
 
 
 # --- C: single-entry auto-select needs no name, matching run_detail's

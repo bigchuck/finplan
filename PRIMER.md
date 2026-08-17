@@ -17,9 +17,10 @@ every edge case of a feature, that's the place to look.
 
 ```
 cd src
-python -m finplan.cli <control-file.json>                  # lists scenarios in the file
-python -m finplan.cli <control-file.json> <scenario-name>   # runs one
-python -m finplan.cli <control-file.json> <scenario-name> <report-name>  # runs it with a named report
+python -m finplan.cli <control-file.json>                              # lists scenarios in the file
+python -m finplan.cli <control-file.json> <scenario-name>               # runs one
+python -m finplan.cli <control-file.json> <scenario-name> --report <name>  # runs it with a named report
+python -m finplan.cli <control-file.json> <scenario-name> --out output/run.txt  # writes output to a file instead of stdout
 ```
 
 You must run this from the `src/` directory (or otherwise have it on
@@ -539,11 +540,17 @@ for). A report configuration only changes what gets *printed* — it never
 changes what the simulation actually does, so switching between summary
 and detail mode never changes the final numbers.
 
-Selecting a report from the CLI: pass its name as the third argument. If
-the file has no `reports` block, don't pass one. If it has exactly one
-entry, it's used automatically. If it has more than one and you didn't
-name one, the CLI lists the available names and exits — same pattern as
-omitting the scenario name.
+Selecting a report from the CLI: pass its name with `--report`. If the file
+has no `reports` block, don't pass one. If it has exactly one entry, it's
+used automatically. If it has more than one and you didn't name one, the
+CLI lists the available names and exits — same pattern as omitting the
+scenario name.
+
+By default all of this prints to stdout. Pass `--out <path>` (relative to
+the current directory, e.g. `--out output/base-detail.txt`) to write it to
+a file instead — parent directories are created automatically, and the CLI
+prints a one-line confirmation to the real stdout once the file is
+written.
 
 ## Common gotchas
 
