@@ -129,9 +129,9 @@ def test_ltcg_stacks_on_ordinary_at_preferential_rate():
     # Ordinary 60k -> 13000. Gain slice = 15000*(100000-40000)/100000 = 9000.
     # Gain stacks on 60k (already >50k) -> all 9000 at 15% = 1350 (not 30%).
     assert r.ordinary == money("60000.00")
-    assert r.ltcg == money("9000.00")
+    assert r.preferential == money("9000.00")
     assert r.ordinary_tax == money("13000.00")
-    assert r.ltcg_tax == money("1350.00")
+    assert r.preferential_tax == money("1350.00")
     assert r.tax == money("14350.00")
     assert _zero(engine)
 
