@@ -371,14 +371,32 @@ class UnrealizedInvariantError(AssertionError):
     """
 
 
+def _shock_drain(engine: Engine, account: str) -> Decimal:
+    """Net outflow ``account`` has taken via Shock-tagged postings (a plain
+    transfer -- see generators.Shock) since the sim began. A Shock against a
+    brokerage account is a deliberate, basis-neutral markdown -- most
+    notably a pct-mode market-crash shock -- not a sale: nothing recognizes
+    a gain/loss or adjusts basis to bring UNREALIZED back in step with the
+    new mv, so the invariant below has to expect the drain instead of
+    flagging it as drift.
+    """
+    total = ZERO
+    for txn in engine.journal:
+        for p in txn.postings:
+            if p.account == account and p.meta.get("kind") == "shock":
+                total = money(total - p.amount)
+    return total
+
+
 def unrealized_gap(engine: Engine, brokerages: list["BrokerageAccount"]) -> Decimal:
     """Return Equity:UnrealizedGains minus the expected -(mv - basis) total
-    across ``brokerages``. Zero means the invariant holds."""
+    across ``brokerages``, net of any Shock-driven markdowns (see
+    _shock_drain). Zero means the invariant holds."""
     expected = ZERO
     for acct in brokerages:
         mv = engine.balance(acct.name)
         basis = money(acct.attrs.get("basis", 0))
-        expected = money(expected - (mv - basis))
+        expected = money(expected - (mv - basis) - _shock_drain(engine, acct.name))
     actual = engine.balance(UNREALIZED)
     return money(actual - expected)
 

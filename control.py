@@ -38,7 +38,7 @@ _ACCOUNT_TYPES = {
 }
 
 _STREAM_KEYS = ("name", "to", "income", "amount", "start", "end")
-_SHOCK_KEYS = ("name", "from", "to", "amount", "when")
+_SHOCK_KEYS = ("name", "from", "to", "amount", "pct", "mode", "when")
 _RECURRING_KEYS = ("name", "from", "to", "amount", "start", "end", "interval")
 _SCHEDULE_KEYS = ("name", "source", "to", "mode", "amount", "month",
                   "owner_birth_year", "rmd_start_age", "divisors",
@@ -218,13 +218,29 @@ def _build_cash_managers(specs: list, registry: dict) -> list:
     return [_build_cash_manager(spec, registry) for spec in specs]
 
 
-def _build_shock(spec: dict) -> Shock:
+def _build_shock(spec: dict, registry: dict) -> Shock:
     attrs = {k: v for k, v in spec.items() if k not in _SHOCK_KEYS}
+    amount = spec.get("amount")
+    pct = spec.get("pct")
+    if (amount is None) == (pct is None):
+        raise ValueError(
+            f"shock {spec['name']!r}: exactly one of 'amount' or 'pct' is "
+            f"required")
+    frm_account = None
+    if pct is not None:
+        frm_account = registry.get(spec["from"])
+        if frm_account is None:
+            raise KeyError(
+                f"shock {spec['name']!r}: 'from' {spec['from']!r} is not a "
+                f"declared account")
     return Shock(
         name=spec["name"],
         frm=spec["from"],
         to=spec["to"],
-        amount=spec["amount"],
+        amount=amount,
+        pct=pct,
+        mode=spec.get("mode", "compound"),
+        frm_account=frm_account,
         when=_parse_date(spec["when"]),
         attrs=attrs,
     )
@@ -389,7 +405,7 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
         objects.append(_build_stream(spec))
 
     for spec in control.get("shocks", []):
-        objects.append(_build_shock(spec))
+        objects.append(_build_shock(spec, registry))
 
     for spec in control.get("recurring_expenses", []):
         objects.append(_build_recurring_expense(spec))

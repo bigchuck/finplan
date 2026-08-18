@@ -354,21 +354,69 @@ class HELOCPayment(Generator):
 
 
 class Shock(Generator):
-    def __init__(self, name: str, frm: str, to: str, amount, when, attrs=None):
+    """A one-off dated transfer, sized either by a fixed ``amount`` (today's
+    dollars, inflation-scaled) or by ``pct`` of the source account's live
+    balance -- the market-crash case: "knock 30% off this account this
+    month." Exactly one of the two must be given.
+
+    ``pct`` interacts with the source account's own apply_growth, which
+    fires the same period off the same pre-tick balance (see Simulation.
+    _accrue -- every object's step() is computed before any of this tick's
+    transactions post, so order between the two doesn't matter):
+
+      mode="compound" (default) -- the shock's own leg is pure
+        balance * pct; growth still lands separately, so the two net out
+        additively (e.g. a 7%-annual account's ~0.58% monthly growth plus
+        a -30% shock nets to about -29.4% that month, not -30%).
+      mode="override" -- the shock leg also cancels this period's growth
+        contribution (using frm_account's own 'growth' attr, the same rate
+        apply_growth reads), so pct is the ONLY change to the balance this
+        month regardless of the account's normal trajectory.
+    """
+
+    _MODES = ("compound", "override")
+
+    def __init__(self, name: str, frm: str, to: str, when, amount=None,
+                 pct=None, mode: str = "compound", frm_account=None,
+                 attrs=None):
         super().__init__(name, attrs)
         self.frm = frm
         self.to = to
-        self.amount = money(amount)
         self.when = when
+        if (amount is None) == (pct is None):
+            raise ValueError(
+                f"Shock {name!r}: exactly one of 'amount' or 'pct' is required")
+        self.amount = money(amount) if amount is not None else None
+        self.pct = rate(pct) if pct is not None else None
+        if mode not in self._MODES:
+            raise ValueError(f"Shock {name!r}: unknown mode {mode!r}")
+        self.mode = mode
+        # Only consulted under mode="override", to read the source's own
+        # 'growth' attr live -- see class docstring.
+        self.frm_account = frm_account
+
+    def _pct_amount(self, engine: Engine) -> Decimal:
+        balance = engine.balance(self.frm)
+        base = money(balance * self.pct)
+        if self.mode == "compound":
+            return base
+        growth = rate(self.frm_account.attrs.get("growth", 0)) if self.frm_account else rate(0)
+        g = money(balance * (growth / Decimal(12)))
+        return money(base + g)
 
     def emit(self, period, engine: Engine) -> list[Transaction]:
-        if self.amount == ZERO:
-            return []
         if (period.year, period.month) != (self.when.year, self.when.month):
             return []
-        # Declared amount is "today's dollars"; period.inflation is 1 under
-        # mode "nominal" so this is a no-op there. See inflation.py.
-        amt = money(self.amount * period.inflation)
+        if self.pct is not None:
+            amt = self._pct_amount(engine)
+        else:
+            if self.amount == ZERO:
+                return []
+            # Declared amount is "today's dollars"; period.inflation is 1
+            # under mode "nominal" so this is a no-op there. See inflation.py.
+            amt = money(self.amount * period.inflation)
+        if amt == ZERO:
+            return []
         owner = self.attrs.get("owner")
         return [
             Transaction(
