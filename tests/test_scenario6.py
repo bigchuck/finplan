@@ -20,6 +20,7 @@ TAX = {
     "brackets": [[10000, "0.10"], [40000, "0.20"], [1000000000, "0.30"]],
     "ltcg_brackets": [[50000, "0.00"], [500000, "0.15"], [1000000000, "0.20"]],
     "std_deduction": "0.00", "ss_inclusion": "0.85", "settle_month": 4,
+    "cash_account": "Assets:Checking",
 }
 
 

@@ -329,7 +329,8 @@ def test_year_placeholder_resolves_per_firing():
 def test_year_placeholder_payment_is_credited_at_settlement():
     # No income at all, so TY2026's payable is zero and the whole 3,000.00
     # comes back as a refund in April 2027 -- proof the settlement read it.
-    engine, sim = _run({**YEAR_TEMPLATED, "tax": {"settle_month": 4}})
+    engine, sim = _run({**YEAR_TEMPLATED, "tax": {"settle_month": 4,
+                                               "cash_account": "Assets:Checking"}})
     ev = next(e for e in sim.tax_engine.events if e.year == 2026)
     assert ev.estimated == money("3000.00")
     assert ev.paid == money("-3000.00")

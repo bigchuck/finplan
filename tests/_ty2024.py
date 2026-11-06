@@ -53,7 +53,8 @@ def ty2024_tax(**fields) -> dict:
     """
     deductions = {"salt_cap": TY2024_SALT_CAP}
     deductions.update(fields.pop("deductions", None) or {})
-    return {**TY2024_MFJ, "deductions": deductions, **fields}
+    return {**TY2024_MFJ, "cash_account": "Assets:Checking",
+            "deductions": deductions, **fields}
 
 
 def ty2024_engine(**kw) -> TaxEngine:

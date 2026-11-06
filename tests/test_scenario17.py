@@ -156,6 +156,53 @@ def test_two_blocks_without_explicit_dividend_to_still_raises():
         assert "dividend_to" in str(e)
 
 
+AMBIGUOUS_TAX_CASH = {
+    "start": "2026-01-01", "years": 1,
+    "accounts": [
+        {"type": "asset", "name": "Assets:CheckingA", "opening": "5000.00"},
+        {"type": "asset", "name": "Assets:CheckingB", "opening": "5000.00"},
+    ],
+    "cash_management": AMBIGUOUS_DIVIDEND_TARGET["cash_management"],
+    "tax": {"settle_month": 4},
+}
+
+
+def test_two_blocks_without_explicit_tax_cash_account_raises():
+    # Used to fall back to an invented "Assets:Checking" that silently
+    # soaked up every settlement and refund.
+    try:
+        build(AMBIGUOUS_TAX_CASH)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "cash_account" in str(e)
+
+
+def test_explicit_tax_cash_account_resolves_the_ambiguity():
+    control = {**AMBIGUOUS_TAX_CASH,
+               "tax": {"settle_month": 4, "cash_account": "Assets:CheckingA"}}
+    _, sim, _ = build(control)
+    assert sim.tax_engine.cash_account == "Assets:CheckingA"
+
+
+def test_string_reinvest_flag_is_rejected():
+    # JSON "false" (a string) is truthy and would silently reinvest.
+    control = {
+        "start": "2026-01-01", "years": 1,
+        "accounts": [
+            {"type": "asset", "name": "Assets:Checking", "opening": "5000.00"},
+            {"type": "brokerage", "name": "Assets:Brokerage",
+             "opening": "50000.00", "basis": "50000.00",
+             "dividend_yield": "0.02", "reinvest": "false",
+             "dividend_to": "Assets:Checking"},
+        ],
+    }
+    try:
+        build(control)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "reinvest" in str(e)
+
+
 if __name__ == "__main__":
     from _runner import run_module
     raise SystemExit(run_module(__name__))

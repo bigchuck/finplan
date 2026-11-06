@@ -76,6 +76,12 @@ def _build_dividend_policy(account: BrokerageAccount, control: dict) -> Dividend
     """
     attrs = account.attrs
     reinvest = attrs.get("reinvest", True)
+    # A JSON string like "false" is truthy in Python and would silently
+    # reinvest -- insist on a real boolean.
+    if not isinstance(reinvest, bool):
+        raise ValueError(
+            f"account {account.name!r}: 'reinvest' must be JSON true/false, "
+            f"not {reinvest!r}")
     to = attrs.get("dividend_to") or _default_cash_account(control)
     if not reinvest and not to:
         raise ValueError(
@@ -316,8 +322,13 @@ def _build_law_change(spec: dict) -> TaxLawChange:
 
 
 def _build_tax_engine(spec: dict, control: dict) -> TaxEngine:
-    cash = (spec.get("cash_account") or _default_cash_account(control)
-            or "Assets:Checking")
+    cash = spec.get("cash_account") or _default_cash_account(control)
+    if cash is None:
+        # Never invent an account: a made-up "Assets:Checking" would quietly
+        # absorb every settlement/refund outside the real cash flow.
+        raise ValueError(
+            "tax block needs a 'cash_account' (or exactly one "
+            "cash_management block to default to)")
     est = spec.get("estimates") or {}
     return TaxEngine(
         cash_account=cash,
