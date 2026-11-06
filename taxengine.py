@@ -67,35 +67,40 @@ from .engine import Engine
 from .primitives import Posting, Transaction, ZERO, money
 
 _INF = money("1e12")
+# Federal defaults are TY2026 (Rev. Proc. 2025-32, post-OBBBA), MFJ. They are
+# nominal and NOT indexed by this module: a run spanning later years should
+# move them forward with tax.law_changes entries.
 DEFAULT_BRACKETS = [
-    (money(23200), Decimal("0.10")), (money(94300), Decimal("0.12")),
-    (money(201050), Decimal("0.22")), (money(383900), Decimal("0.24")),
-    (money(487450), Decimal("0.32")), (money(731200), Decimal("0.35")),
+    (money(24800), Decimal("0.10")), (money(100800), Decimal("0.12")),
+    (money(211400), Decimal("0.22")), (money(403550), Decimal("0.24")),
+    (money(512450), Decimal("0.32")), (money(768700), Decimal("0.35")),
     (_INF, Decimal("0.37")),
 ]
 DEFAULT_LTCG = [
-    (money(94050), Decimal("0.00")), (money(583750), Decimal("0.15")),
+    (money(98900), Decimal("0.00")), (money(613700), Decimal("0.15")),
     (_INF, Decimal("0.20")),
 ]
-DEFAULT_STD = money(29200)
+DEFAULT_STD = money(32200)
 # Single-filer tables, same year as the MFJ figures above. A surviving spouse
 # files Single from the year AFTER the death. The bands are NOT half the joint
 # ones — that asymmetry is the survivor's penalty, and it is the reason a
 # first death has to move the whole schedule rather than scale one input.
 DEFAULT_SINGLE_BRACKETS = [
-    (money(11600), Decimal("0.10")), (money(47150), Decimal("0.12")),
-    (money(100525), Decimal("0.22")), (money(191950), Decimal("0.24")),
-    (money(243725), Decimal("0.32")), (money(609350), Decimal("0.35")),
+    (money(12400), Decimal("0.10")), (money(50400), Decimal("0.12")),
+    (money(105700), Decimal("0.22")), (money(201775), Decimal("0.24")),
+    (money(256225), Decimal("0.32")), (money(640600), Decimal("0.35")),
     (_INF, Decimal("0.37")),
 ]
 DEFAULT_SINGLE_LTCG = [
-    (money(47025), Decimal("0.00")), (money(518900), Decimal("0.15")),
+    (money(49450), Decimal("0.00")), (money(545500), Decimal("0.15")),
     (_INF, Decimal("0.20")),
 ]
-DEFAULT_SINGLE_STD = money(14600)
+DEFAULT_SINGLE_STD = money(16100)
 DEFAULT_SS_INCLUSION = Decimal("0.85")
 DEFAULT_SAFE_HARBOR = Decimal("1.10")
-DEFAULT_SALT_CAP = money(10000)
+# TY2026 OBBBA cap. The MAGI phase-out (down to a $10,000 floor) is NOT
+# modelled; a high-income scenario should set tax.deductions.salt_cap itself.
+DEFAULT_SALT_CAP = money(40400)
 
 # Interest posted to this gate flows into the itemized bucket; interest on a
 # non-qualifying loan goes to a plain Expenses:Interest:* account and never

@@ -71,6 +71,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finplan.control import build
+from finplan.tests._ty2024 import TY2024_SINGLE, ty2024_tax
 from finplan.generators import Stream
 from finplan.primitives import money, ZERO
 
@@ -103,6 +104,8 @@ def _control(deaths=None, heir_rate="0.24", years=5, accounts=None,
         "streams": streams if streams is not None else STREAMS,
         "legacy": {
             "heir_rate": heir_rate,
+            # Pinned so the survivor's Single year matches the hand calc.
+            "single": dict(TY2024_SINGLE),
             "deaths": BOTH_DEATHS if deaths is None else deaths,
         },
     }
@@ -280,7 +283,7 @@ def test_debt_does_not_die_and_can_leave_the_estate_insolvent():
 
 # --- filing status ----------------------------------------------------------
 
-TAX = {"settle_month": 4}
+TAX = ty2024_tax(settle_month=4)
 
 
 def test_filing_status_is_still_joint_in_the_year_of_the_death():

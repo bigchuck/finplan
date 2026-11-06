@@ -391,7 +391,7 @@ behavioral switch.
 ## Taxes
 
 `"tax"` turns on annual accrual/settlement. Every field is optional
-(current-law-ish federal brackets/deduction are the defaults), but two
+(the defaults are the TY2026 IRS MFJ brackets/deduction, not indexed for later years), but two
 sub-blocks are opt-in **by presence**, not by a flag inside them — an
 absent `estimates` or `state` key means that mechanism is fully off:
 
@@ -427,7 +427,7 @@ swept into the federal settlement by accident. State tax is federally
 deductible in the year it's **paid**, not the year it accrued — so tax
 year Y's state liability (accrued in December Y) reduces *federal* taxable
 income for tax year Y+1, not Y. `tax.deductions` (`salt_cap`, default
-$10,000; `other_itemized`) governs the itemized-vs-standard-deduction
+$40,400, the TY2026 cap, with no income phase-out; `other_itemized`) governs the itemized-vs-standard-deduction
 comparison — the larger of the two is always used automatically.
 
 **Law changes** (`tax.law_changes`) let a scenario move brackets,

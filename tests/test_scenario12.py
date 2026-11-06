@@ -14,7 +14,7 @@ HAND CALCULATION (the base scenario)
 -------------------------------------
 Assets:Checking opens at 0.00. A single "salary" stream pays 5,000.00/month
 to Income:Ordinary, so ordinary income is 60,000.00 every year. With the
-DEFAULT std deduction (29,200.00) and DEFAULT brackets:
+pinned TY2024 std deduction (29,200.00) and brackets (tests/_ty2024.py):
 
     taxable = 60,000.00 - 29,200.00 = 30,800.00
     tax = 23,200 @ 10% + 7,600 @ 12% = 2,320.00 + 912.00 = 3,232.00
@@ -32,11 +32,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finplan.control import build
+from finplan.tests._ty2024 import ty2024_tax
 from finplan.primitives import money, ZERO
 
 
 def _control(law_changes=(), years=4, salary="5000.00", streams=None):
-    tax = {"settle_month": 4, "law_changes": list(law_changes)}
+    tax = ty2024_tax(settle_month=4, law_changes=list(law_changes))
     control = {
         "start": "2026-01-01", "years": years,
         "accounts": [

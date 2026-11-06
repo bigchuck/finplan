@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finplan.control import build
+from finplan.tests._ty2024 import ty2024_tax
 from finplan.primitives import money, ZERO
 from finplan.taxengine import TaxEngine
 
@@ -46,15 +47,15 @@ CONTROL = {
         {"name": "pension", "to": "Assets:Checking",
          "income": "Income:Ordinary", "amount": "5000.00", "owner": "chuck"},
     ],
-    "tax": {
-        "settle_month": 4,
-        "estimates": {
+    "tax": ty2024_tax(
+        settle_month=4,
+        estimates={
             "safe_harbor_multiple": "1.10",
             "credit_withholding": True,
             "prior_year_tax": "12000.00",
             "prior_year_withholding": "4000.00",
         },
-    },
+    ),
 }
 
 # Same scenario with the estimates block removed: proves the feature is
@@ -62,7 +63,7 @@ CONTROL = {
 NO_ESTIMATES = {
     **CONTROL,
     "years": 1,
-    "tax": {"settle_month": 4},
+    "tax": ty2024_tax(settle_month=4),
 }
 
 

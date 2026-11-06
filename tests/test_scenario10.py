@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finplan.cashmanager import HARD, SOFT
 from finplan.control import build
+from finplan.tests._ty2024 import ty2024_tax
 from finplan.primitives import money, ZERO
 from finplan.taxengine import DEDUCTIBLE_INTEREST
 
@@ -263,8 +264,8 @@ def test_deductible_interest_routes_to_the_gate_the_taxengine_reads():
         streams=[{"name": "pension", "to": "Assets:Checking",
                   "income": "Income:Ordinary", "amount": "5000.00",
                   "owner": "chuck"}],
-        tax={"settle_month": 4,
-             "deductions": {"other_itemized": "28500.00"}},
+        tax=ty2024_tax(settle_month=4,
+                       deductions={"other_itemized": "28500.00"}),
     )
     # Jul-Dec 2026 interest on a 20,000.00 draw = 1,230.40, which tips
     # 28,500.00 of other itemized deductions past the 29,200.00 standard.
@@ -277,8 +278,8 @@ def test_non_deductible_interest_never_reaches_the_return():
         streams=[{"name": "pension", "to": "Assets:Checking",
                   "income": "Income:Ordinary", "amount": "5000.00",
                   "owner": "chuck"}],
-        tax={"settle_month": 4,
-             "deductions": {"other_itemized": "28500.00"}},
+        tax=ty2024_tax(settle_month=4,
+                       deductions={"other_itemized": "28500.00"}),
     )
     # Same interest, same amount, but the account is not flagged deductible:
     # it lands on a gate the TaxEngine does not read, so the standard

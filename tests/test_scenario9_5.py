@@ -50,6 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finplan.control import build
+from finplan.tests._ty2024 import ty2024_engine, ty2024_tax
 from finplan.primitives import money, ZERO
 from finplan.taxengine import TaxEngine
 
@@ -65,12 +66,11 @@ CONTROL = {
         {"name": "pension", "to": "Assets:Checking",
          "income": "Income:Ordinary", "amount": "5000.00", "owner": "chuck"},
     ],
-    "tax": {
-        "settle_month": 4,
-        "state": {"rate": "0.0685", "std_deduction": "16000.00"},
-        "deductions": {"salt_cap": "10000.00",
-                       "other_itemized": "27000.00"},
-    },
+    "tax": ty2024_tax(
+        settle_month=4,
+        state={"rate": "0.0685", "std_deduction": "16000.00"},
+        deductions={"salt_cap": "10000.00", "other_itemized": "27000.00"},
+    ),
 }
 
 # Same scenario with the state and deductions blocks removed: proves S9.5 is
@@ -78,7 +78,7 @@ CONTROL = {
 NO_STATE = {
     **CONTROL,
     "years": 1,
-    "tax": {"settle_month": 4},
+    "tax": ty2024_tax(settle_month=4),
 }
 
 
@@ -95,19 +95,19 @@ def state_events(sim):
 # --- the deduction choice (unit) -------------------------------------------
 
 def test_standard_wins_when_itemized_falls_short():
-    te = TaxEngine(deductions={"other_itemized": "27000.00"})
+    te = ty2024_engine(deductions={"other_itemized": "27000.00"})
     assert te.itemized_for(2026) == money("27000.00")
     assert te.deduction_for(2026) == money("29200.00")
 
 
 def test_itemized_wins_once_salt_tips_it_over():
-    te = TaxEngine(deductions={"other_itemized": "27000.00"})
+    te = ty2024_engine(deductions={"other_itemized": "27000.00"})
     te.state_paid[2027] = money("3014.00")
     assert te.deduction_for(2027) == money("30014.00")
 
 
 def test_salt_is_capped():
-    te = TaxEngine(deductions={"salt_cap": "10000.00",
+    te = ty2024_engine(deductions={"salt_cap": "10000.00",
                                "other_itemized": "27000.00"})
     te.state_paid[2027] = money("25000.00")
     # 25,000.00 clipped to 10,000.00, not carried in whole.
@@ -115,7 +115,7 @@ def test_salt_is_capped():
 
 
 def test_salt_is_keyed_by_payment_year_not_accrual_year():
-    te = TaxEngine(deductions={"other_itemized": "27000.00"})
+    te = ty2024_engine(deductions={"other_itemized": "27000.00"})
     te.state_paid[2027] = money("3014.00")
     # The year the liability arose sees nothing; the year the cash left does.
     assert te.deduction_for(2026) == money("29200.00")
