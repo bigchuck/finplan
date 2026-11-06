@@ -303,6 +303,17 @@ already declared, in one of three modes:
  "mode": "rmd", "owner_birth_year": 1952}
 ```
 
+A literal `{year}` in a schedule's `to` is replaced with the year of each
+firing, so one multi-year schedule can pay a per-tax-year account. The main
+use is self-funded estimated tax, which the tax engine credits only from
+`Assets:PrepaidTax:TY{year}:Estimated`:
+
+```json
+{"name": "Roth_conversion_tax_fed", "source": "Assets:Brokerage",
+ "to": "Assets:PrepaidTax:TY{year}:Estimated", "mode": "fixed",
+ "amount": "36000.00", "month": 12, "start": "2027-01-01", "end": "2036-12-31"}
+```
+
 (`tests/test_scenario7.py`) A Schedule (like the cash-management waterfall)
 never overdraws — a fixed withdrawal that exceeds available capacity
 silently caps at what's there instead of erroring or going negative.

@@ -292,6 +292,57 @@ def test_start_end_window_bounds_a_schedule():
     assert engine.balance("Assets:IRA") == money("360000.00")
 
 
+# --- H2: "{year}" in "to" targets a per-tax-year account ---------------------
+#
+# A self-funded estimated payment (say, the tax on a Roth conversion) has to
+# land in Assets:PrepaidTax:TY{y}:Estimated for the TaxEngine's settlement
+# to credit it. One schedule spanning several years reaches the right bucket
+# each December via the placeholder.
+
+YEAR_TEMPLATED = {
+    "start": "2026-01-01", "years": 2,
+    "accounts": [
+        {"type": "asset", "name": "Assets:Checking", "opening": "50000.00"},
+    ],
+    "schedules": [
+        {"name": "ConversionTax", "source": "Assets:Checking",
+         "to": "Assets:PrepaidTax:TY{year}:Estimated",
+         "mode": "fixed", "amount": "3000.00", "month": 12},
+    ],
+}
+
+
+def test_year_placeholder_resolves_per_firing():
+    engine, sim = _run(YEAR_TEMPLATED)
+    assert engine.balance("Assets:PrepaidTax:TY2026:Estimated") == money("3000.00")
+    assert engine.balance("Assets:PrepaidTax:TY2027:Estimated") == money("3000.00")
+    # Nothing ever posts to the literal, unformatted name.
+    assert engine.balance("Assets:PrepaidTax:TY{year}:Estimated") == ZERO
+    sched = next(o for o in sim.objects if isinstance(o, Schedule))
+    assert [e.to for e in sched.events] == [
+        "Assets:PrepaidTax:TY2026:Estimated",
+        "Assets:PrepaidTax:TY2027:Estimated",
+    ]
+    assert _zero(engine)
+
+
+def test_year_placeholder_payment_is_credited_at_settlement():
+    # No income at all, so TY2026's payable is zero and the whole 3,000.00
+    # comes back as a refund in April 2027 -- proof the settlement read it.
+    engine, sim = _run({**YEAR_TEMPLATED, "tax": {"settle_month": 4}})
+    ev = next(e for e in sim.tax_engine.events if e.year == 2026)
+    assert ev.estimated == money("3000.00")
+    assert ev.paid == money("-3000.00")
+    assert engine.balance("Assets:PrepaidTax:TY2026:Estimated") == ZERO
+    assert _zero(engine)
+
+
+def test_to_without_placeholder_is_unchanged():
+    _, sim = _run(FIXED)
+    sched = next(o for o in sim.objects if isinstance(o, Schedule))
+    assert all(e.to == "Assets:Checking" for e in sched.events)
+
+
 # --- I: forced-withdrawal-style report for schedules -------------------------
 
 def test_report_names_schedule_that_never_fired():

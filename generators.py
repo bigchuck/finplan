@@ -675,6 +675,16 @@ class Schedule(Generator):
             return False
         return True
 
+    def to_for(self, period) -> str:
+        """Destination account for this period's firing.
+
+        A literal "{year}" in ``to`` becomes the period's calendar year, so a
+        multi-year schedule can target a per-tax-year account such as
+        "Assets:PrepaidTax:TY{year}:Estimated". str.replace rather than
+        str.format, so no other brace in an account name is ever parsed.
+        """
+        return self.to.replace("{year}", str(period.year))
+
     def _age_in(self, year: int) -> int:
         return year - self.owner_birth_year
 
@@ -721,16 +731,17 @@ class Schedule(Generator):
         if gross <= ZERO:
             return []
 
+        to = self.to_for(period)
         meta = {"scheduled": True, "trigger": self.name, "source": self.source.name}
         if self.mode == "roth_conversion":
-            wd: Withdrawal = self.source.convert(gross, self.to, period, engine, meta)
+            wd: Withdrawal = self.source.convert(gross, to, period, engine, meta)
         else:
-            wd = self.source.fund_from(gross, self.to, period, engine, meta)
+            wd = self.source.fund_from(gross, to, period, engine, meta)
 
         self.events.append(ScheduleEvent(
             date=period.date, mode=self.mode, requested=requested,
             gross=wd.gross, net=wd.net, withheld=wd.withheld, gain=wd.gain,
-            character=wd.character, source=self.source.name, to=self.to,
+            character=wd.character, source=self.source.name, to=to,
         ))
         return wd.txns
 
