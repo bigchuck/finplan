@@ -563,6 +563,14 @@ a file instead — parent directories are created automatically, and the CLI
 prints a one-line confirmation to the real stdout once the file is
 written.
 
+To get a full transaction log, pass `--journal <prefix>` (repeatable, e.g.
+`--journal Assets:Checking --journal Income:`). After the summary, it
+lists every transaction over the whole run that touches a matching
+account, with all of each transaction's legs. A transaction that matches
+more than one prefix is listed once. It works with or without a report,
+and unlike a detail report's `transactions` key it ignores `frequency`,
+so no months are skipped.
+
 ## Common gotchas
 
 A consolidated list of the things most likely to bite you, pulled from

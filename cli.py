@@ -9,7 +9,8 @@ import os
 
 from .control import build_scenario
 from .reporting import (
-    ReportConfigError, build_report_config, print_summary, run_detail,
+    ReportConfigError, build_report_config, print_journal, print_summary,
+    run_detail,
 )
 from .scenarios import mixin_names, names
 
@@ -33,6 +34,12 @@ def main(argv=None) -> int:
                              "current directory (e.g. output/run.txt), "
                              "instead of stdout; parent directories are "
                              "created if needed")
+    parser.add_argument("--journal", action="append", default=[],
+                        dest="journal", metavar="PREFIX",
+                        help="after the summary, list every transaction "
+                             "that touches an account under this prefix "
+                             "(e.g. Assets:Checking); repeatable, an entry "
+                             "matching several prefixes is listed once")
     args = parser.parse_args(argv)
 
     with open(args.control) as fh:
@@ -96,6 +103,9 @@ def main(argv=None) -> int:
 
         label = "+".join([args.scenario, *args.mixins])
         print_summary(label, engine, sim, years)
+        if args.journal:
+            print()
+            print_journal(engine, args.journal)
         return 0
 
     with contextlib.ExitStack() as stack:

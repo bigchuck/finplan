@@ -196,6 +196,28 @@ def run_detail(engine: Engine, sim: Simulation, years: int,
                 _print_snapshot(f"[{cfg.name}] {period.date}:", engine, cfg)
 
 
+# --- full-run journal dump (--journal) ----------------------------------
+
+def print_journal(engine: Engine, prefixes: list) -> None:
+    """Every journal entry, over the whole run, that touches an account
+    under any of ``prefixes`` -- each entry once, in posting order, with
+    all of its legs (not just the matching ones), so the other side of
+    each movement is visible. Unlike a detail report's 'transactions'
+    key, this ignores 'frequency': nothing is skipped.
+    """
+    entries = [txn for txn in engine.journal
+               if any(p.account.startswith(prefix)
+                      for p in txn.postings for prefix in prefixes)]
+    print(f"Journal: {len(entries)} transaction(s) touching "
+          f"{', '.join(prefixes)}")
+    width = max((len(p.account) for txn in entries for p in txn.postings),
+                default=0)
+    for txn in entries:
+        print(f"  {txn.date}  {txn.description}")
+        for p in txn.postings:
+            print(f"      {p.account:<{width}}  {p.amount:>+14,.2f}")
+
+
 # --- the pre-existing end-of-run summary, moved verbatim -----------------
 
 def print_summary(scenario: str, engine: Engine, sim: Simulation,
