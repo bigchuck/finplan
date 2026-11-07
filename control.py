@@ -7,7 +7,7 @@ from datetime import date
 
 from .accounts import (
     AssetAccount, BrokerageAccount, HELOCAccount, LiabilityAccount,
-    RothAccount, TraditionalIRAAccount, UNREALIZED,
+    RothAccount, TraditionalIRAAccount, UNREALIZED, rate,
 )
 from .cashmanager import CashManager, Source
 from .taxengine import (
@@ -17,7 +17,7 @@ from .taxengine import (
 from .engine import Engine
 from .generators import (
     Contribution, DividendPolicy, HELOCInterestPolicy, HELOCPayment,
-    InterestPolicy, RecurringExpense, Schedule, Shock, Stream,
+    InterestPolicy, RecurringExpense, Schedule, Shock, Stream, TaxFunding,
 )
 from .inflation import build_inflation
 from .legacy import Death, Estate
@@ -42,7 +42,9 @@ _SHOCK_KEYS = ("name", "from", "to", "amount", "pct", "mode", "when")
 _RECURRING_KEYS = ("name", "from", "to", "amount", "start", "end", "interval")
 _SCHEDULE_KEYS = ("name", "source", "to", "mode", "amount", "month",
                   "owner_birth_year", "rmd_start_age", "divisors",
-                  "start", "end")
+                  "start", "end", "tax_funding")
+_TAX_FUNDING_KEYS = ("from", "floor", "fed_rate", "state_rate", "fed_to",
+                     "state_to", "min_amount")
 _CONTRIBUTION_KEYS = ("name", "from", "to", "mode", "amount", "fraction",
                       "threshold", "month", "start", "end")
 
@@ -271,6 +273,9 @@ def _build_schedule(spec: dict, registry: dict) -> Schedule:
     if name not in registry:
         raise KeyError(f"schedule source {name!r} is not a declared account")
     attrs = {k: v for k, v in spec.items() if k not in _SCHEDULE_KEYS}
+    tax_funding = (_build_tax_funding(spec["name"], spec["tax_funding"],
+                                      registry)
+                   if spec.get("tax_funding") else None)
     return Schedule(
         name=spec["name"],
         source=registry[name],
@@ -284,6 +289,7 @@ def _build_schedule(spec: dict, registry: dict) -> Schedule:
         start=_parse_date(spec["start"]) if spec.get("start") else None,
         end=_parse_date(spec["end"]) if spec.get("end") else None,
         attrs=attrs,
+        tax_funding=tax_funding,
     )
 
 
@@ -305,6 +311,32 @@ def _build_contribution(spec: dict, registry: dict) -> Contribution:
         start=_parse_date(spec["start"]) if spec.get("start") else None,
         end=_parse_date(spec["end"]) if spec.get("end") else None,
         attrs=attrs,
+    )
+
+
+def _build_tax_funding(schedule_name: str, spec: dict,
+                       registry: dict) -> TaxFunding:
+    unknown = set(spec) - set(_TAX_FUNDING_KEYS)
+    if unknown:
+        # A typo here (e.g. "flor") would otherwise silently mean floor 0.
+        raise ValueError(
+            f"schedule {schedule_name!r}: unknown tax_funding key(s) "
+            f"{sorted(unknown)}")
+    src = spec.get("from")
+    if src not in registry:
+        raise KeyError(f"schedule {schedule_name!r}: tax_funding 'from' "
+                       f"{src!r} is not a declared account")
+    kw = {}
+    if spec.get("fed_to"):
+        kw["fed_to"] = spec["fed_to"]
+    return TaxFunding(
+        source=registry[src],
+        floor=money(spec.get("floor", 0)),
+        fed_rate=rate(spec.get("fed_rate", 0)),
+        state_rate=rate(spec.get("state_rate", 0)),
+        state_to=spec.get("state_to"),
+        min_amount=money(spec.get("min_amount", 0)),
+        **kw,
     )
 
 

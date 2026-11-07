@@ -318,6 +318,50 @@ use is self-funded estimated tax, which the tax engine credits only from
 never overdraws — a fixed withdrawal that exceeds available capacity
 silently caps at what's there instead of erroring or going negative.
 
+#### A conversion that pays its own tax: `tax_funding`
+
+Separate tax schedules don't know about the conversion: once the account
+paying the tax runs dry they quietly underpay, the shortfall comes due at
+April settlement, and the waterfall covers it from the trad IRA or the Roth.
+A `tax_funding` block on a `roth_conversion` ties the two together:
+
+```json
+{"name": "Conversion_2", "source": "Assets:IRA:Schwab:Chuck",
+ "to": "Assets:IRA:Roth", "mode": "roth_conversion",
+ "amount": "120000.00", "month": 11,
+ "start": "2027-01-01", "end": "2036-12-31",
+ "tax_funding": {"from": "Assets:Brokerage:EdJones", "floor": "75000.00",
+                 "fed_rate": "0.30", "state_rate": "0.03",
+                 "state_to": "Expenses:Tax:State"}}
+```
+
+Each firing:
+
+- estimates the tax as `converted × (fed_rate + state_rate)`;
+- **scales the conversion down** so that paying that tax leaves `from` at
+  or above `floor`. With no headroom it converts nothing that year and the
+  schedule report shows a `skipped` line with the reason;
+- skips the year, too, when the scaled-down amount would be under the
+  optional `min_amount` (today's dollars, scaled by inflation like
+  `amount`), so a barely-recovered account doesn't produce tiny
+  conversions. A `min_amount` above `amount` is a build error, because no
+  year could ever convert;
+- pays the tax **in the same firing**, as one sale from `from`: the federal
+  part goes to `fed_to` (default `Assets:PrepaidTax:TY{year}:Estimated`,
+  which the tax engine credits at settlement), the state part to `state_to`
+  (required when `state_rate` > 0);
+- never draws on any other account.
+
+There is no latch: if `from` recovers above the floor (growth, inflows),
+later years convert again. The rates are a flat estimate. The real liability
+is known only when the tax engine settles the year, and any difference
+settles in April like any other under- or over-payment; it includes the
+capital gain realized by the tax sale itself. `floor` is nominal (not
+inflation-scaled), like every other balance floor. `from` must not withhold
+(a brokerage or cash account, not a traditional IRA). With `tax_funding` in
+place, drop the separate `Roth_conversion_tax_*` schedules, or the tax is
+paid twice. (`tests/test_scenario19.py`)
+
 **Gotchas common to all flows:**
 - Dates are `"YYYY-MM-DD"` strings; day-of-month is parsed but ignored for
   scheduling — everything effectively fires "on the 1st" of its month.
@@ -642,5 +686,6 @@ this primer gives. Run any of them directly: `python tests/test_scenarioN.py`.
 | Recurring expenses | `test_scenario15.py` |
 | The `reports` block / detail mode | `test_scenario16.py` |
 | Multiple `cash_management` blocks, waterfall cycle detection | `test_scenario17.py` |
+| Roth conversion with `tax_funding` (scale-down, skip, resume) | `test_scenario19.py` |
 | Scenario inheritance: `extends`, override-by-name, `_remove`, mixins | `test_scenarios.py` |
 | Ledger primitives: transactions, balance invariants, money rounding | `test_primitives.py` |

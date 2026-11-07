@@ -20,14 +20,14 @@ from __future__ import annotations
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 
 from .accounts import (
     AssetAccount, BrokerageAccount, HELOCAccount, TraditionalIRAAccount,
     Withdrawal, rate,
 )
 from .engine import Engine
-from .primitives import Posting, Transaction, ZERO, money
+from .primitives import CENTS, Posting, Transaction, ZERO, money
 from .simobject import SimObject
 
 
@@ -628,6 +628,58 @@ class ScheduleEvent:
     character: str | None = None
     source: str = ""
     to: str = ""
+    # Set only on a roth_conversion with tax_funding:
+    tax_paid: Decimal = ZERO      # fed + state, sold from the tax source
+    limited_by: str | None = None  # "capacity" | "tax_funding" when scaled
+    skipped: str | None = None     # reason the firing converted nothing
+
+
+@dataclass
+class TaxFunding:
+    """How a roth_conversion pays its own tax, and when it must hold back.
+
+    At each firing the conversion is SCALED DOWN so that selling
+    ``amount * (fed_rate + state_rate)`` from ``source`` leaves it at or above
+    ``floor``; below the floor it converts nothing that year. Nothing is ever
+    drawn from any other account. There is no latch: a later year converts
+    again if the source has recovered above the floor. ``min_amount`` skips
+    a year whose scaled-down conversion would be smaller than it, so a
+    barely-recovered source doesn't produce sliver conversions. Like the
+    schedule's ``amount`` it is today's dollars, scaled by inflation.
+
+    The rates are a flat estimate decided at firing time -- the true liability
+    is only known when the TaxEngine settles the year, and any difference
+    settles in April like any other under/over-payment. ``floor`` is nominal
+    (not inflation-scaled), like every other balance floor in the model.
+    """
+    source: AssetAccount
+    floor: Decimal
+    fed_rate: Decimal
+    state_rate: Decimal = ZERO
+    fed_to: str = "Assets:PrepaidTax:TY{year}:Estimated"
+    state_to: str | None = None
+    min_amount: Decimal = ZERO
+
+    def __post_init__(self):
+        if self.min_amount < ZERO:
+            raise ValueError("tax_funding min_amount must not be negative")
+        if self.source.withholding_rate != ZERO:
+            raise ValueError(
+                f"tax_funding source {self.source.name!r} withholds "
+                f"{self.source.withholding_rate}; pay conversion tax from an "
+                f"account with no withholding (brokerage or cash)")
+        if self.fed_rate < ZERO or self.state_rate < ZERO:
+            raise ValueError("tax_funding rates must not be negative")
+        if self.fed_rate + self.state_rate <= ZERO:
+            raise ValueError(
+                "tax_funding needs a positive fed_rate and/or state_rate")
+        if self.state_rate > ZERO and not self.state_to:
+            raise ValueError(
+                "tax_funding with a state_rate needs a 'state_to' account")
+
+    @property
+    def total_rate(self) -> Decimal:
+        return self.fed_rate + self.state_rate
 
 
 class Schedule(Generator):
@@ -636,9 +688,11 @@ class Schedule(Generator):
     def __init__(self, name: str, source: AssetAccount, to: str, mode: str,
                  amount=None, month: int = 1, owner_birth_year: int | None = None,
                  rmd_start_age: int = 73, divisors: dict | None = None,
-                 start=None, end=None, attrs=None):
+                 start=None, end=None, attrs=None,
+                 tax_funding: TaxFunding | None = None):
         super().__init__(name, attrs)
         self.source = source
+        self.tax_funding = tax_funding
         self.to = to
         self.mode = mode
         self.amount = money(amount) if amount is not None else None
@@ -666,6 +720,16 @@ class Schedule(Generator):
             raise ValueError(
                 f"Schedule {name!r}: mode 'roth_conversion' requires source "
                 f"to be a TraditionalIRAAccount, got {type(source).__name__}")
+        if tax_funding is not None and self.mode != "roth_conversion":
+            raise ValueError(
+                f"Schedule {name!r}: 'tax_funding' applies only to mode "
+                f"'roth_conversion', not {mode!r}")
+        if tax_funding is not None and tax_funding.min_amount > self.amount:
+            # Every year would be skipped -- almost certainly a typo.
+            raise ValueError(
+                f"Schedule {name!r}: tax_funding min_amount "
+                f"{tax_funding.min_amount:,.2f} exceeds amount "
+                f"{self.amount:,.2f}, so it could never convert")
 
     def _active(self, period) -> bool:
         pm = (period.year, period.month)
@@ -731,6 +795,10 @@ class Schedule(Generator):
         if gross <= ZERO:
             return []
 
+        if self.tax_funding is not None:
+            return self._emit_funded_conversion(period, engine, requested,
+                                                gross)
+
         to = self.to_for(period)
         meta = {"scheduled": True, "trigger": self.name, "source": self.source.name}
         if self.mode == "roth_conversion":
@@ -745,14 +813,108 @@ class Schedule(Generator):
         ))
         return wd.txns
 
+    def _emit_funded_conversion(self, period, engine: Engine,
+                                requested: Decimal,
+                                gross: Decimal) -> list[Transaction]:
+        """Convert only as much as the tax source can pay for while staying
+        at or above its floor, and pay that tax in the same firing -- so the
+        conversion and its funding can never disagree."""
+        tf = self.tax_funding
+        to = self.to_for(period)
+        limited_by = "capacity" if gross < requested else None
+
+        headroom = tf.source.capacity(tf.floor, engine)
+        affordable = (headroom / tf.total_rate).quantize(CENTS,
+                                                         rounding=ROUND_DOWN)
+        if affordable < gross:
+            gross = affordable
+            limited_by = "tax_funding"
+        min_amount = money(tf.min_amount * period.inflation)
+        skipped = None
+        if gross <= ZERO:
+            skipped = (f"{tf.source.name} "
+                       f"{engine.balance(tf.source.name):,.2f} is at or "
+                       f"below its floor {tf.floor:,.2f}")
+        elif gross < min_amount:
+            skipped = (f"would convert only {gross:,.2f}, below min_amount "
+                       f"{min_amount:,.2f}")
+        if skipped is not None:
+            self.events.append(ScheduleEvent(
+                date=period.date, mode=self.mode, requested=requested,
+                gross=ZERO, net=ZERO, source=self.source.name, to=to,
+                skipped=skipped,
+            ))
+            return []
+
+        fed = money(gross * tf.fed_rate)
+        state = money(gross * tf.state_rate)
+        if fed + state > headroom:   # half-up rounding can overshoot a cent
+            if state > ZERO:
+                state = money(headroom - fed)
+            else:
+                fed = headroom
+        tax = money(fed + state)
+
+        meta = {"scheduled": True, "trigger": self.name,
+                "source": self.source.name}
+        wd: Withdrawal = self.source.convert(gross, to, period, engine, meta)
+        txns = list(wd.txns)
+
+        # ONE sale for the whole tax bill: two fund_from calls on the same
+        # brokerage in one tick would both read the pre-sale balance against
+        # an already-reduced basis and overstate the second sale's gain.
+        fed_to = tf.fed_to.replace("{year}", str(period.year))
+        state_to = (tf.state_to.replace("{year}", str(period.year))
+                    if tf.state_to else None)
+        tax_meta = {"scheduled": True, "trigger": self.name,
+                    "kind": "conversion-tax", "source": tf.source.name}
+        if tax > ZERO:
+            first_to = fed_to if fed > ZERO else state_to
+            sale = tf.source.fund_from(tax, first_to, period, engine,
+                                       tax_meta)
+            txns.extend(sale.txns)
+        if fed > ZERO and state > ZERO:
+            txns.append(Transaction(
+                date=period.date,
+                description=f"Route {self.name} state tax to {state_to}",
+                postings=[
+                    Posting(fed_to, -state, meta=dict(tax_meta)),
+                    Posting(state_to, state, meta=dict(tax_meta)),
+                ],
+                meta=dict(tax_meta),
+            ))
+
+        self.events.append(ScheduleEvent(
+            date=period.date, mode=self.mode, requested=requested,
+            gross=wd.gross, net=wd.net,
+            character=wd.character, source=self.source.name, to=to,
+            tax_paid=tax, limited_by=limited_by,
+        ))
+        return txns
+
     def report(self) -> str:
         if not self.events:
             return f"  {self.name} ({self.mode}): never fired."
-        lines = [f"  {self.name} ({self.mode}) — {len(self.events)} distribution(s):"]
+        fired = [e for e in self.events if e.skipped is None]
+        skipped = len(self.events) - len(fired)
+        head = f"  {self.name} ({self.mode}) — {len(fired)} distribution(s)"
+        if skipped:
+            head += f", {skipped} skipped"
+        lines = [head + ":"]
         for e in self.events:
+            if e.skipped is not None:
+                lines.append(f"    {e.date}  skipped (requested "
+                             f"{e.requested:,.2f}): {e.skipped}")
+                continue
             bits = [f"gross {e.gross:,.2f}", f"net {e.net:,.2f}"]
             if e.gross < e.requested:
-                bits.append(f"requested {e.requested:,.2f} (capped by capacity)")
+                why = ("scaled to fit tax funding"
+                       if e.limited_by == "tax_funding"
+                       else "capped by capacity")
+                bits.append(f"requested {e.requested:,.2f} ({why})")
+            if e.tax_paid > ZERO:
+                src = self.tax_funding.source.name if self.tax_funding else "?"
+                bits.append(f"tax {e.tax_paid:,.2f} from {src}")
             if e.withheld > ZERO:
                 bits.append(f"withheld {e.withheld:,.2f}")
             if e.gain > ZERO:
