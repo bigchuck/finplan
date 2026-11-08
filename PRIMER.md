@@ -208,9 +208,9 @@ first.
 | `asset` | `AssetAccount` | `apr` (nonzero → auto-attaches interest income), `withholding` |
 | `liability` | `LiabilityAccount` | — |
 | `heloc` | `HELOCAccount` | `credit_limit`, `rate`, `opened`, `maturity`, `origination_fee`, `payment` (mode/amount), `deductible`, `payment_from` |
-| `brokerage` | `BrokerageAccount` | `growth`, `basis`, `dividend_yield` (nonzero → auto-attaches a dividend policy), `qualified_fraction`, `reinvest`, `dividend_to` |
-| `traditional_ira` | `TraditionalIRAAccount` | `growth`, `withholding` (defaults to 0.20) |
-| `roth` | `RothAccount` | `growth` |
+| `brokerage` | `BrokerageAccount` | `growth`, `asset_class`, `basis`, `dividend_yield` (nonzero → auto-attaches a dividend policy), `qualified_fraction`, `reinvest`, `dividend_to` |
+| `traditional_ira` | `TraditionalIRAAccount` | `growth`, `asset_class`, `withholding` (defaults to 0.20) |
+| `roth` | `RothAccount` | `growth`, `asset_class` |
 
 A few things worth knowing per type:
 
@@ -224,9 +224,84 @@ A few things worth knowing per type:
   account's `balance - floor`. A capitalizing HELOC (no payments, interest
   just adds to what's owed) can exceed `credit_limit` over time — nothing
   invents a repayment that didn't happen.
+- **`growth` is the account's baseline**, as an annual rate applied
+  `growth / 12` each month. Market segments (next section) can override
+  it over time for every account sharing an `asset_class`.
 - **`owner` is worth tagging on every account** even if you don't need it
   yet — it drives survivorship and filing-status logic if you later add a
   `legacy` block.
+
+## Market segments: dips and changing returns over time
+
+An account's `growth` is a single rate for the whole run. To model market
+dips or a change in returns partway through, give accounts an
+`asset_class` and add named segments to a top-level `market` list.
+Segments almost always live in mixins, so you can try different market
+paths against the same plan:
+
+```json
+"accounts": [
+  {"type": "traditional_ira", "name": "Assets:IRA", "asset_class": "equity",
+   "growth": "0.05", "opening": "500000.00"}
+],
+"mixins": {
+  "crash_then_new_normal": {
+    "market": [
+      {"name": "crash_2027",    "asset_class": "equity", "start": "2027-05", "months": 5,  "drawdown": "0.20"},
+      {"name": "recovery_2027", "asset_class": "equity", "start": "2027-10", "months": 18, "growth": "0.09"},
+      {"name": "normal_2029",   "asset_class": "equity", "start": "2029-04",               "growth": "0.035"}
+    ]
+  }
+}
+```
+
+- **`asset_class`** is any name you choose (`equity`, `real_estate`,
+  `single_stock`, …), one per account. It is allowed only on `brokerage`,
+  `traditional_ira` and `roth`, the types that have a `growth`. An account
+  with no class is never affected by segments.
+- **`start`** is a year-month, `"2027-05"`. A segment may run past
+  year-end, and one that starts before the simulation is cut to the
+  months that remain.
+- **Each segment is either a `drawdown` or a `growth`:**
+  - `drawdown` is a *total* decline over `months` (required), compounded
+    geometrically: 20% over 5 months is about −4.36% of the current
+    balance each month, so an untouched account ends exactly 20% down. An
+    account being drawn from during the dip falls in proportion to what it
+    holds.
+  - `growth` is an annual rate (`growth / 12` monthly, like an account's).
+    `months` is optional; without it the segment runs until a later one
+    replaces it.
+- **Which rate applies:** each month, the running segment with the
+  *latest start* wins for its class. A segment fully suspends the
+  account's own `growth` while it runs. When a finite segment ends,
+  whatever is still running beneath it resumes (a dip inside a longer
+  regime hands back to that regime); if nothing is running, the account's
+  own `growth` resumes.
+- **Errors:** two segments of one class starting in the same month (no
+  rule picks a winner), a segment naming a class no account carries
+  (usually a typo), an unknown key, or both or neither of `drawdown` and
+  `growth`.
+- **Mixins stack.** `market` is a named list, so
+  `--mixin lumpy_decade --mixin market_crash_20pct` puts a 2027 crash on
+  top of a sequence of regimes; reusing a name in a later mixin replaces
+  that segment.
+- **Per-account differences** come from classes: a mixin can move one
+  account to another class for a run, e.g.
+  `{"accounts": [{"name": "Assets:IRA:Roth", "asset_class": "equity_stable"}]}`.
+- The journal labels each month's growth with the segment that set it,
+  e.g. `growth @ -0.20 over 5 mo (market: crash_2027)`.
+- A dip changes market value only. Dividends and cash `apr` are
+  unaffected. On a brokerage account the markdown goes to
+  `Equity:UnrealizedGains` and basis is unchanged, so a later sale below
+  basis records a capital *loss*. That loss offsets the same year's gains
+  and qualified dividends only: there is no $3,000 deduction against
+  ordinary income and no carryforward, so after a deep dip taxes are, if
+  anything, slightly overstated.
+
+Use market segments for market moves and keep `shocks` for real one-off
+cash events.
+
+(`tests/test_scenario20.py`)
 
 ## Flows
 
@@ -687,5 +762,6 @@ this primer gives. Run any of them directly: `python tests/test_scenarioN.py`.
 | The `reports` block / detail mode | `test_scenario16.py` |
 | Multiple `cash_management` blocks, waterfall cycle detection | `test_scenario17.py` |
 | Roth conversion with `tax_funding` (scale-down, skip, resume) | `test_scenario19.py` |
+| Market segments: drawdowns, growth regimes, asset classes | `test_scenario20.py` |
 | Scenario inheritance: `extends`, override-by-name, `_remove`, mixins | `test_scenarios.py` |
 | Ledger primitives: transactions, balance invariants, money rounding | `test_primitives.py` |

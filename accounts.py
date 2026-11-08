@@ -73,9 +73,28 @@ class Withdrawal:
 
 
 class Account(SimObject):
+    # Set by control.build to the scenario's market.Market when the scenario
+    # declares one; None means every account just uses its own ``growth``.
+    market = None
+
     @abstractmethod
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         raise NotImplementedError
+
+    def monthly_growth(self, period) -> tuple[Decimal, str]:
+        """This period's growth as (monthly rate, description label).
+
+        A running market segment for this account's ``asset_class`` wins
+        (see market.py); otherwise the account's own annual ``growth`` / 12.
+        The monthly rate is NOT rate()-quantized: a drawdown's geometric
+        monthly rate needs its full precision to land on the stated total.
+        """
+        seg = (self.market.segment_for(self.attrs.get("asset_class"), period)
+               if self.market is not None else None)
+        if seg is not None:
+            return seg.monthly_rate, f"{seg.label} (market: {seg.name})"
+        growth = rate(self.attrs.get("growth", 0))
+        return growth / Decimal(12), f"{growth} annual"
 
     def eligible(self, period) -> bool:
         """May this account be tapped as a funding source this period?
@@ -132,15 +151,15 @@ class TaxDeferredGrowth:
 
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         mv = engine.balance(self.name)
-        growth = rate(self.attrs.get("growth", 0))
-        g = money(mv * (growth / Decimal(12)))
+        monthly, label = self.monthly_growth(period)
+        g = money(mv * monthly)
         if g == ZERO:
             return []
         owner = self.attrs.get("owner")
         return [
             Transaction(
                 date=period.date,
-                description=f"{self.name} tax-deferred growth @ {growth} annual",
+                description=f"{self.name} tax-deferred growth @ {label}",
                 postings=[
                     Posting(self.name, g, owner=owner, meta={"kind": "growth"}),
                     Posting(UNREALIZED_DEFERRED, -g, owner=owner,
@@ -205,15 +224,15 @@ class TraditionalIRAAccount(TaxDeferredGrowth, AssetAccount):
 class BrokerageAccount(AssetAccount):
     def apply_growth(self, period, engine: Engine) -> list[Transaction]:
         mv = engine.balance(self.name)
-        growth = rate(self.attrs.get("growth", 0))
-        g = money(mv * (growth / Decimal(12)))
+        monthly, label = self.monthly_growth(period)
+        g = money(mv * monthly)
         if g == ZERO:
             return []
         owner = self.attrs.get("owner")
         return [
             Transaction(
                 date=period.date,
-                description=f"{self.name} appreciation @ {growth} annual",
+                description=f"{self.name} appreciation @ {label}",
                 postings=[
                     Posting(self.name, g, owner=owner, meta={"kind": "growth"}),
                     Posting(UNREALIZED, -g, owner=owner, meta={"kind": "growth"}),

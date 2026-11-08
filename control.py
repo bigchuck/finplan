@@ -21,6 +21,7 @@ from .generators import (
 )
 from .inflation import build_inflation
 from .legacy import Death, Estate
+from .market import build_market
 from .primitives import Posting, Transaction, ZERO, money
 from .scenarios import apply_mixins, resolve
 from .simobject import SimObject
@@ -36,6 +37,10 @@ _ACCOUNT_TYPES = {
     "traditional_ira": TraditionalIRAAccount,
     "roth": RothAccount,
 }
+
+# Only these types have an apply_growth that reads a growth rate, so only
+# they can belong to an asset_class that market segments act on.
+_GROWING_TYPES = ("brokerage", "traditional_ira", "roth")
 
 _STREAM_KEYS = ("name", "to", "income", "amount", "start", "end")
 _SHOCK_KEYS = ("name", "from", "to", "amount", "pct", "mode", "when")
@@ -147,6 +152,41 @@ def _build_heloc(account: HELOCAccount, control: dict) -> list:
             amount=fee, when=opened,
             attrs={"owner": account.attrs.get("owner")}))
     return objects
+
+
+def _check_asset_class(spec: dict) -> None:
+    cls = spec.get("asset_class")
+    if cls is None:
+        return
+    if not isinstance(cls, str) or not cls:
+        raise ValueError(
+            f"account {spec['name']!r}: 'asset_class' must be a non-empty "
+            f"string, not {cls!r}")
+    if spec["type"] not in _GROWING_TYPES:
+        # Market segments override growth; a checking/CD/HELOC account has
+        # none, so tagging one would silently do nothing.
+        raise ValueError(
+            f"account {spec['name']!r}: 'asset_class' only applies to "
+            f"{list(_GROWING_TYPES)} accounts, not {spec['type']!r}")
+
+
+def _attach_market(specs: list, registry: dict) -> None:
+    """Build the scenario's market segments and hand them to every account.
+    A segment naming a class no account carries is rejected -- most likely a
+    typo ("equitty") that would otherwise leave the plan quietly un-crashed.
+    """
+    if not specs:
+        return
+    market = build_market(specs)
+    declared = {a.attrs["asset_class"] for a in registry.values()
+                if a.attrs.get("asset_class") is not None}
+    missing = sorted(market.classes() - declared)
+    if missing:
+        raise ValueError(
+            f"market segment(s) name asset_class {missing} that no account "
+            f"declares; declared classes: {sorted(declared)}")
+    for account in registry.values():
+        account.market = market
 
 
 def _build_cash_manager(spec: dict, registry: dict) -> CashManager:
@@ -411,6 +451,7 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
 
     for spec in control.get("accounts", []):
         cls = _ACCOUNT_TYPES[spec["type"]]
+        _check_asset_class(spec)
         attrs = {k: v for k, v in spec.items()
                  if k not in ("type", "name", "opening")}
         account = cls(name=spec["name"], attrs=attrs)
@@ -443,6 +484,8 @@ def build(control: dict) -> tuple[Engine, Simulation, int]:
             objects.append(
                 InterestPolicy(name=f"interest:{account.name}", source=account)
             )
+
+    _attach_market(control.get("market", []), registry)
 
     for spec in control.get("streams", []):
         objects.append(_build_stream(spec))

@@ -369,9 +369,10 @@ class Shock(Generator):
         additively (e.g. a 7%-annual account's ~0.58% monthly growth plus
         a -30% shock nets to about -29.4% that month, not -30%).
       mode="override" -- the shock leg also cancels this period's growth
-        contribution (using frm_account's own 'growth' attr, the same rate
-        apply_growth reads), so pct is the ONLY change to the balance this
-        month regardless of the account's normal trajectory.
+        contribution (using frm_account.monthly_growth, the same rate
+        apply_growth reads -- a running market segment included), so pct is
+        the ONLY change to the balance this month regardless of the
+        account's normal trajectory.
     """
 
     _MODES = ("compound", "override")
@@ -391,24 +392,24 @@ class Shock(Generator):
         if mode not in self._MODES:
             raise ValueError(f"Shock {name!r}: unknown mode {mode!r}")
         self.mode = mode
-        # Only consulted under mode="override", to read the source's own
-        # 'growth' attr live -- see class docstring.
+        # Only consulted under mode="override", to read the source's live
+        # growth rate -- see class docstring.
         self.frm_account = frm_account
 
-    def _pct_amount(self, engine: Engine) -> Decimal:
+    def _pct_amount(self, period, engine: Engine) -> Decimal:
         balance = engine.balance(self.frm)
         base = money(balance * self.pct)
-        if self.mode == "compound":
+        if self.mode == "compound" or self.frm_account is None:
             return base
-        growth = rate(self.frm_account.attrs.get("growth", 0)) if self.frm_account else rate(0)
-        g = money(balance * (growth / Decimal(12)))
+        monthly, _ = self.frm_account.monthly_growth(period)
+        g = money(balance * monthly)
         return money(base + g)
 
     def emit(self, period, engine: Engine) -> list[Transaction]:
         if (period.year, period.month) != (self.when.year, self.when.month):
             return []
         if self.pct is not None:
-            amt = self._pct_amount(engine)
+            amt = self._pct_amount(period, engine)
         else:
             if self.amount == ZERO:
                 return []
